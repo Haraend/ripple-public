@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main, 'feat/**']
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.14.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+      - name: Secret scan (staged-tree heuristic)
+        run: |
+          set -euo pipefail
+          if git grep -nE '(DISCORD_TOKEN|APEX_API_KEY|SPOTIFY_CLIENT_SECRET)\s*=\s*[^[:space:]]+' -- ':!.env.example' ':!AGENTS.md' ':!README.md' ':!.cursor/**' ':!TODO.md' 2>/dev/null; then
+            echo "Possible hardcoded secret assignment found" >&2
+            exit 1
+          fi
+          if git ls-files | grep -E '(\.env$|\.db$|TODO\.md)' ; then
+            echo "Sensitive path is tracked by git" >&2
+            exit 1
+          fi
+          echo "Secret scan passed"
