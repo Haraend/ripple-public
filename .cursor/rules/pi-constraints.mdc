@@ -1,0 +1,14 @@
+---
+description: Raspberry Pi 3 memory and storage constraints
+alwaysApply: true
+---
+
+# Pi constraints (1 GB RAM / 32 GB disk)
+
+- Never add a JavaScript Opus encoder (`@discordjs/opus`, `opusscript`) or `ffmpeg-static`.
+- Never write media (audio/video) to disk. yt-dlp must use `--no-download --no-cache-dir`; FFmpeg writes only to `pipe:1`.
+- Every spawned child (FFmpeg, yt-dlp) must be tracked and killed on skip, stop, disconnect, and process shutdown.
+- Persist to SQLite only when state actually changed (delta writes). Offline Apex polls write nothing.
+- Cap concurrent voice streams (`MUSIC_MAX_CONCURRENT_STREAMS`, default 2). Prefer refusing over stuttering.
+- No new runtime dependency without justifying its memory cost against the 1 GB budget.
+- Prefer Opus passthrough (`-c:a copy`) when volume is 100, seek is 0, and the source codec is opus.

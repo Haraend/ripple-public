@@ -1,0 +1,14 @@
+---
+description: Git workflow for the public Ripple repository
+alwaysApply: true
+---
+
+# Git workflow
+
+- Branch per phase: `feat/phase-1-core`, `feat/phase-2-music`, `feat/phase-3-apex`, `feat/phase-4-deploy`.
+- Never commit directly to `main`.
+- Use conventional commits (`feat:`, `fix:`, `chore:`, `docs:`, `test:`, `ci:`).
+- Never stage or commit `.env`, `data/`, `*.db`, `*.db-wal`, `*.db-shm`, cookies, or `TODO.md`.
+- Before staging, scan the diff for token-shaped strings and secret filenames.
+- Leave branches unpushed unless the user explicitly asks to push.
+- Do not amend commits that were already pushed; do not force-push.
