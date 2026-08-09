@@ -1,0 +1,14 @@
+---
+description: Core TypeScript and security standards for Ripple
+alwaysApply: true
+---
+
+# Project standards
+
+- Never hardcode tokens, API keys, or Discord IDs. Every config value flows through `src/config/env.ts`.
+- Never commit `.env`, `data/`, `*.db`, cookies, or `TODO.md`.
+- No `any`, no non-null `!`, no `as` casts outside zod / boundary parse sites.
+- Validate all external JSON (Discord payloads you reshape, Apex API, Spotify) with zod.
+- User-facing failures throw `UserFacingError`. Never leak stack traces or secrets into Discord replies.
+- Prefer `readonly` fields and explicit return types on public module surfaces.
+- Keep modules self-contained under `src/modules/<name>/` with an `index.ts` that exports a `Module`.
