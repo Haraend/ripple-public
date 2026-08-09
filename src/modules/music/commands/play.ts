@@ -1,22 +1,19 @@
 import { SlashCommandBuilder } from 'discord.js';
 import { UserFacingError } from '../../../core/errors.js';
 import type { Command } from '../../../core/types.js';
+import { resolveWithYtDlp, shouldUseYtDlp } from '../resolvers/ytdlp.js';
 import { assertSafeMediaUrl } from '../url-safety.js';
 import { ensureVoiceForMember, playDirectUrl, setSessionVolume } from '../session-manager.js';
 import type { TrackLike } from '../stream.js';
 
-/**
- * Phase 1 smoke: only direct HTTP(S) audio URLs.
- * Phase 2 replaces resolution with yt-dlp; this command stays the entrypoint.
- */
 export const playCommand: Command = {
   data: new SlashCommandBuilder()
     .setName('play')
-    .setDescription('Play a direct audio URL in the voice channel (smoke test)')
+    .setDescription('Play YouTube, SoundCloud, or a direct audio URL')
     .addStringOption((option) =>
       option
         .setName('url')
-        .setDescription('Direct HTTP(S) audio URL (ogg/opus preferred)')
+        .setDescription('YouTube/SoundCloud URL or direct http(s) audio URL')
         .setRequired(true),
     ),
   tier: 'dj',
@@ -37,19 +34,22 @@ export const playCommand: Command = {
     const raw = ctx.options.getString('url', true) ?? ctx.options.getRest() ?? '';
     const url = raw.trim();
 
-    await assertSafeMediaUrl(url);
+    let track: TrackLike;
+    if (shouldUseYtDlp(url)) {
+      track = await resolveWithYtDlp(url, ctx.client.services.env);
+    } else {
+      await assertSafeMediaUrl(url);
+      const lower = url.toLowerCase();
+      const codec = lower.endsWith('.opus') || lower.endsWith('.ogg') ? 'opus' : 'other';
+      track = {
+        url,
+        title: url.split('/').pop() ?? 'direct-url',
+        codec,
+      };
+    }
+
     await ensureVoiceForMember(ctx.member, ctx.logger);
-
     setSessionVolume(ctx.guild.id, settings.defaultVolume);
-
-    const lower = url.toLowerCase();
-    const codec = lower.endsWith('.opus') || lower.endsWith('.ogg') ? 'opus' : 'other';
-
-    const track: TrackLike = {
-      url,
-      title: url.split('/').pop() ?? 'direct-url',
-      codec,
-    };
 
     const { mode } = await playDirectUrl(
       ctx.guild.id,

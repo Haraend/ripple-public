@@ -4,7 +4,7 @@ Public Discord bot (music + Apex Legends tracker) optimized for Raspberry Pi 3.
 
 ## Current phase
 
-**Phase 1 — Core skeleton + voice smoke test** (complete and live-verified on `feat/phase-1-core`; next is Phase 2 music after merge to `main`).
+**Phase 2 — Music module** (in progress on `feat/phase-2-music`; yt-dlp resolver landed, queue/cache next).
 
 Detailed checkbox tasks for Phases 1–4 live in a **gitignored** `TODO.md` on the
 maintainer machine. If you are a fresh clone / cloud agent and do not see
@@ -43,7 +43,7 @@ in the test guild. For production multi-guild, unset `DEV_GUILD_ID` and deploy g
 
 Commands, events, and modules implement the interfaces in `src/core/types.ts`.
 Do not redefine them. Music and Apex are optional modules that disable cleanly
-when their env keys are absent. Do not start Phase 2 scope until Phase 1 is merged.
+when their env keys are absent.
 
 ## Verification before marking work done
 

@@ -79,13 +79,13 @@ export async function assertSafeMediaUrl(raw: string): Promise<URL> {
     parsed = new URL(raw);
   } catch {
     throw new UserFacingError(
-      'Phase 1 only accepts a direct http(s) audio URL. YouTube arrives in Phase 2.',
+      'Provide a YouTube/SoundCloud URL or a direct http(s) audio URL.',
     );
   }
 
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
     throw new UserFacingError(
-      'Phase 1 only accepts a direct http(s) audio URL. YouTube arrives in Phase 2.',
+      'Provide a YouTube/SoundCloud URL or a direct http(s) audio URL.',
     );
   }
 

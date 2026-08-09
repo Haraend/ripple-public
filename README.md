@@ -5,10 +5,10 @@ Designed to run on a **Raspberry Pi 3** (arm64, ~1 GB RAM, 32 GB storage).
 
 ## Current phase
 
-**Phase 1 — Core skeleton + voice smoke test** (complete and live-verified on `feat/phase-1-core`; merge to `main`, then Phase 2 music).
+**Phase 2 — Music module** (in progress on `feat/phase-2-music`).
 
-Later phases (music module, Apex tracker, Pi deployment) live in a local gitignored
-`TODO.md` on the maintainer machine. This file is the public status pointer.
+Later phases (Apex tracker, Pi deployment) and remaining Phase 2 checkboxes live in a
+local gitignored `TODO.md` on the maintainer machine. This file is the public status pointer.
 
 ## Features (roadmap)
 
