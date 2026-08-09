@@ -160,4 +160,48 @@ describe('resolveWithYtDlp', () => {
     });
     expect(track.codec).toBe('other');
   });
+
+  it('skips yt-dlp spawn on fresh track cache hit', async () => {
+    const fs = await import('node:fs');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const { createDb } = await import('../src/db/index.js');
+    const { runMigrations } = await import('../src/db/migrate.js');
+    const { TrackCacheRepository } = await import('../src/db/repositories/track-cache.js');
+    const { createLogger } = await import('../src/lib/logger.js');
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ripple-ytdlp-cache-'));
+    const logger = createLogger(testEnv({ LOG_LEVEL: 'silent' }));
+    const { db, sqlite } = createDb({ DATABASE_PATH: path.join(dir, 't.db') }, logger);
+    try {
+      runMigrations(db, logger);
+      const trackCache = new TrackCacheRepository(db, 100);
+      trackCache.upsert({
+        sourceKey: 'https://youtu.be/cached',
+        webpageUrl: 'https://www.youtube.com/watch?v=cached',
+        title: 'From Cache',
+        durationMs: 5_000,
+        streamUrl: 'https://cdn.example.com/cached.webm',
+        codec: 'opus',
+      });
+
+      let spawnCalls = 0;
+      const spawnFn: YtDlpSpawnFn = async () => {
+        spawnCalls += 1;
+        return { code: 0, stdout: '{}', stderr: '' };
+      };
+
+      const track = await resolveWithYtDlp('https://youtu.be/cached', testEnv(), {
+        spawnFn,
+        trackCache,
+      });
+
+      expect(spawnCalls).toBe(0);
+      expect(track.title).toBe('From Cache');
+      expect(track.url).toBe('https://cdn.example.com/cached.webm');
+    } finally {
+      sqlite.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

@@ -36,7 +36,10 @@ export const playCommand: Command = {
 
     let track: TrackLike;
     if (shouldUseYtDlp(url)) {
-      track = await resolveWithYtDlp(url, ctx.client.services.env);
+      track = await resolveWithYtDlp(url, ctx.client.services.env, {
+        trackCache: ctx.client.services.trackCache,
+        logger: ctx.logger,
+      });
     } else {
       await assertSafeMediaUrl(url);
       const lower = url.toLowerCase();

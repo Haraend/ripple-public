@@ -6,6 +6,7 @@ import { initModules, registerEvents, registerModule } from './core/registry.js'
 import { createDb } from './db/index.js';
 import { runMigrations } from './db/migrate.js';
 import { GuildSettingsRepository } from './db/repositories/guild-settings.js';
+import { TrackCacheRepository } from './db/repositories/track-cache.js';
 import { clientReadyEvent } from './events/clientReady.js';
 import { guildDeleteEvent } from './events/guildDelete.js';
 import { interactionCreateEvent } from './events/interactionCreate.js';
@@ -34,12 +35,14 @@ async function main(): Promise<void> {
   const { db, sqlite } = createDb(env, logger);
   runMigrations(db, logger);
   const guildSettings = new GuildSettingsRepository(db);
+  const trackCache = new TrackCacheRepository(db, env.MUSIC_TRACK_CACHE_MAX_ROWS);
 
   const client = new RippleClient({
     env,
     logger,
     db,
     guildSettings,
+    trackCache,
     closeDb: () => {
       sqlite.close();
     },

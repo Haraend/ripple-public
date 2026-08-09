@@ -5,7 +5,9 @@ Designed to run on a **Raspberry Pi 3** (arm64, ~1 GB RAM, 32 GB storage).
 
 ## Current phase
 
-**Phase 2 — Music module** (in progress on `feat/phase-2-music`).
+**Phase 2 — Music module** (in progress on `feat/phase-2-music`; yt-dlp + metadata `track_cache`, default 5000 rows via `MUSIC_TRACK_CACHE_MAX_ROWS`).
+
+Optional Spotify track links (metadata only → YouTube via yt-dlp) when `SPOTIFY_CLIENT_ID` / `SPOTIFY_CLIENT_SECRET` are set.
 
 Later phases (Apex tracker, Pi deployment) and remaining Phase 2 checkboxes live in a
 local gitignored `TODO.md` on the maintainer machine. This file is the public status pointer.

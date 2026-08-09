@@ -16,3 +16,19 @@ export const guildSettings = sqliteTable('guild_settings', {
 
 export type GuildSettingsRow = typeof guildSettings.$inferSelect;
 export type GuildSettingsInsert = typeof guildSettings.$inferInsert;
+
+/** Metadata + stream URL cache only — never stores media bytes. */
+export const trackCache = sqliteTable('track_cache', {
+  sourceKey: text('source_key').primaryKey(),
+  webpageUrl: text('webpage_url').notNull(),
+  title: text('title').notNull(),
+  durationMs: integer('duration_ms'),
+  streamUrl: text('stream_url').notNull(),
+  codec: text('codec').notNull(),
+  streamFetchedAt: integer('stream_fetched_at', { mode: 'timestamp_ms' }).notNull(),
+  metadataFetchedAt: integer('metadata_fetched_at', { mode: 'timestamp_ms' }).notNull(),
+  lastAccessedAt: integer('last_accessed_at', { mode: 'timestamp_ms' }).notNull(),
+});
+
+export type TrackCacheRow = typeof trackCache.$inferSelect;
+export type TrackCacheInsert = typeof trackCache.$inferInsert;

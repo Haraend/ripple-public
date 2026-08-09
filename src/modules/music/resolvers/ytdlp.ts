@@ -2,6 +2,8 @@ import type { ChildProcess } from 'node:child_process';
 import { z } from 'zod';
 import type { Env } from '../../../config/env.js';
 import { UserFacingError } from '../../../core/errors.js';
+import type { TrackCacheRepository } from '../../../db/repositories/track-cache.js';
+import type { Logger } from '../../../lib/logger.js';
 import { Mutex } from '../../../lib/mutex.js';
 import { spawnCaptured, type SpawnCapturedOptions, type SpawnResult } from '../../../lib/spawn.js';
 import type { SourceCodec, TrackLike } from '../stream.js';
@@ -147,11 +149,14 @@ function parseDump(stdout: string): ResolvedTrack {
 
 export interface ResolveWithYtDlpOptions {
   readonly spawnFn?: YtDlpSpawnFn;
+  readonly trackCache?: TrackCacheRepository;
+  readonly logger?: Logger;
 }
 
 /**
  * Resolve a YouTube/SoundCloud URL (or yt-dlp-compatible query) to a stream URL.
  * Never writes media to disk. Global concurrency is capped at 1.
+ * Uses track_cache when provided and MUSIC_TRACK_CACHE_MAX_ROWS > 0.
  */
 export async function resolveWithYtDlp(
   queryOrUrl: string,
@@ -163,10 +168,48 @@ export async function resolveWithYtDlp(
     throw new UserFacingError('Provide a YouTube or SoundCloud URL.');
   }
 
+  const sourceKey = query;
+  const cache = options.trackCache;
+
+  if (cache !== undefined) {
+    const hit = cache.getFresh(sourceKey);
+    if (hit !== null) {
+      options.logger?.debug(
+        { sourceKey, title: hit.title },
+        'track cache hit',
+      );
+      return {
+        url: hit.streamUrl,
+        title: hit.title,
+        codec: hit.codec,
+        durationMs: hit.durationMs,
+        webpageUrl: hit.webpageUrl,
+      };
+    }
+  }
+
   const spawnFn = options.spawnFn ?? spawnCaptured;
   const args = buildArgs(query, env);
 
   return resolveMutex.runExclusive(async () => {
+    // Re-check cache inside mutex in case another resolve filled it.
+    if (cache !== undefined) {
+      const hit = cache.getFresh(sourceKey);
+      if (hit !== null) {
+        options.logger?.debug(
+          { sourceKey, title: hit.title },
+          'track cache hit',
+        );
+        return {
+          url: hit.streamUrl,
+          title: hit.title,
+          codec: hit.codec,
+          durationMs: hit.durationMs,
+          webpageUrl: hit.webpageUrl,
+        };
+      }
+    }
+
     let childRef: ChildProcess | null = null;
     try {
       const result = await spawnFn(env.YTDLP_PATH, args, {
@@ -187,7 +230,20 @@ export async function resolveWithYtDlp(
         throw new UserFacingError('Could not resolve that media URL.');
       }
 
-      return parseDump(result.stdout);
+      const track = parseDump(result.stdout);
+      cache?.upsert({
+        sourceKey,
+        webpageUrl: track.webpageUrl,
+        title: track.title,
+        durationMs: track.durationMs,
+        streamUrl: track.url,
+        codec: track.codec,
+      });
+      options.logger?.debug(
+        { sourceKey, title: track.title, cacheWrite: cache?.enabled === true },
+        'track resolved via yt-dlp',
+      );
+      return track;
     } catch (error) {
       if (childRef !== null) {
         killChild(childRef);
