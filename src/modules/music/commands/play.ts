@@ -1,17 +1,9 @@
 import { SlashCommandBuilder } from 'discord.js';
 import { UserFacingError } from '../../../core/errors.js';
 import type { Command } from '../../../core/types.js';
-import { playDirectUrl, setSessionVolume } from '../session-manager.js';
+import { assertSafeMediaUrl } from '../url-safety.js';
+import { ensureVoiceForMember, playDirectUrl, setSessionVolume } from '../session-manager.js';
 import type { TrackLike } from '../stream.js';
-
-function isHttpUrl(value: string): boolean {
-  try {
-    const url = new URL(value);
-    return url.protocol === 'http:' || url.protocol === 'https:';
-  } catch {
-    return false;
-  }
-}
 
 /**
  * Phase 1 smoke: only direct HTTP(S) audio URLs.
@@ -35,36 +27,21 @@ export const playCommand: Command = {
       return;
     }
 
+    await ctx.defer(false);
+
     const settings = ctx.client.services.guildSettings.get(ctx.guild.id);
     if (!settings.musicEnabled) {
       throw new UserFacingError('Music is disabled in this server.');
     }
 
-    const raw =
-      ctx.options.getString('url', true) ??
-      ctx.options.getRest() ??
-      '';
+    const raw = ctx.options.getString('url', true) ?? ctx.options.getRest() ?? '';
     const url = raw.trim();
-    if (!isHttpUrl(url)) {
-      throw new UserFacingError(
-        'Phase 1 only accepts a direct http(s) audio URL. YouTube arrives in Phase 2.',
-      );
-    }
 
-    if (!ctx.member.voice.channel) {
-      throw new UserFacingError('Join a voice channel first (or use `/join`).');
-    }
-
-    // Ensure we are in the member's channel if not already.
-    const { joinChannel, getSession } = await import('../session-manager.js');
-    if (!getSession(ctx.guild.id)) {
-      await joinChannel(ctx.member.voice.channel, ctx.logger);
-    }
+    await assertSafeMediaUrl(url);
+    await ensureVoiceForMember(ctx.member, ctx.logger);
 
     setSessionVolume(ctx.guild.id, settings.defaultVolume);
 
-    // Direct URLs are usually not raw opus — default to transcode-safe 'other'.
-    // Pure .opus/.ogg URLs can use copy when volume is 100.
     const lower = url.toLowerCase();
     const codec = lower.endsWith('.opus') || lower.endsWith('.ogg') ? 'opus' : 'other';
 
@@ -74,7 +51,6 @@ export const playCommand: Command = {
       codec,
     };
 
-    await ctx.defer(false);
     const { mode } = await playDirectUrl(
       ctx.guild.id,
       track,

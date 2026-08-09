@@ -4,7 +4,7 @@ Public Discord bot (music + Apex Legends tracker) optimized for Raspberry Pi 3.
 
 ## Current phase
 
-**Phase 1 — Core skeleton + voice smoke test** (complete on `feat/phase-1-core`; next is Phase 2 music).
+**Phase 1 — Core skeleton + voice smoke test** (complete and live-verified on `feat/phase-1-core`; next is Phase 2 music after merge to `main`).
 
 Detailed checkbox tasks for Phases 1–4 live in a **gitignored** `TODO.md` on the
 maintainer machine. If you are a fresh clone / cloud agent and do not see
@@ -21,6 +21,7 @@ Do not invent scope beyond the active phase.
 6. Kill every spawned FFmpeg/yt-dlp child on every exit path.
 7. SQLite writes only when state actually changes.
 8. Justify any new runtime dependency against the 1 GB / 32 GB Pi budget.
+9. Direct `/play` URLs must pass SSRF checks (no private/loopback/link-local targets).
 
 ## Stack (pinned)
 
@@ -34,11 +35,15 @@ Do not invent scope beyond the active phase.
 Branch per phase (`feat/phase-1-core`, …). Conventional commits. No commits to
 `main`. Leave branches unpushed unless asked. See `.cursor/rules/git-workflow.mdc`.
 
+When `DEV_GUILD_ID` is set, `pnpm deploy-commands` clears **global** slash commands and
+registers guild-only (plus owner commands). That avoids duplicate `/ping`-style entries
+in the test guild. For production multi-guild, unset `DEV_GUILD_ID` and deploy globals.
+
 ## Module contract
 
 Commands, events, and modules implement the interfaces in `src/core/types.ts`.
 Do not redefine them. Music and Apex are optional modules that disable cleanly
-when their env keys are absent.
+when their env keys are absent. Do not start Phase 2 scope until Phase 1 is merged.
 
 ## Verification before marking work done
 

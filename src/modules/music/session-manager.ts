@@ -11,10 +11,11 @@ import {
   VoiceConnectionStatus,
   type VoiceConnection,
 } from '@discordjs/voice';
-import type { VoiceBasedChannel } from 'discord.js';
+import type { GuildMember, VoiceBasedChannel } from 'discord.js';
 import type { Env } from '../../config/env.js';
-import type { Logger } from '../../lib/logger.js';
 import { UserFacingError } from '../../core/errors.js';
+import type { Logger } from '../../lib/logger.js';
+import { Mutex } from '../../lib/mutex.js';
 import { buildFfmpegArgs, type TrackLike } from './stream.js';
 
 interface GuildSession {
@@ -24,10 +25,12 @@ interface GuildSession {
   ffmpeg: ChildProcess | null;
   volume: number;
   current: TrackLike | null;
+  channelId: string;
 }
 
 const sessions = new Map<string, GuildSession>();
 const trackedChildren = new Set<ChildProcess>();
+const playMutex = new Mutex();
 
 function killChild(child: ChildProcess | null): void {
   if (!child || child.killed) {
@@ -57,14 +60,63 @@ export function getActiveStreamCount(): number {
   return count;
 }
 
+function isSessionBusy(session: GuildSession): boolean {
+  return session.ffmpeg !== null || session.player.state.status !== AudioPlayerStatus.Idle;
+}
+
+function channelHasOtherHumans(channel: VoiceBasedChannel, botUserId: string): boolean {
+  return channel.members.some((member) => !member.user.bot && member.id !== botUserId);
+}
+
+/**
+ * Join / stay / move / refuse based on whether the bot is already serving someone else.
+ */
+export async function ensureVoiceForMember(
+  member: GuildMember,
+  logger: Logger,
+): Promise<GuildSession> {
+  const userChannel = member.voice.channel;
+  if (!userChannel) {
+    throw new UserFacingError('Join a voice channel first.');
+  }
+
+  const existing = sessions.get(member.guild.id);
+  if (!existing) {
+    return joinChannel(userChannel, logger);
+  }
+
+  if (existing.channelId === userChannel.id) {
+    return existing;
+  }
+
+  const botChannel = member.guild.channels.cache.get(existing.channelId);
+  const botVoice =
+    botChannel && botChannel.isVoiceBased()
+      ? botChannel
+      : undefined;
+
+  const busy = isSessionBusy(existing);
+  const othersPresent = botVoice
+    ? channelHasOtherHumans(botVoice, member.client.user.id)
+    : false;
+
+  if (busy || othersPresent) {
+    const name = botVoice?.name ?? 'another channel';
+    throw new UserFacingError(
+      `I'm already in use in **${name}**. Join that channel, or wait until it's free.`,
+    );
+  }
+
+  // Idle and alone in the other channel — safe to move.
+  return joinChannel(userChannel, logger);
+}
+
 export async function joinChannel(
   channel: VoiceBasedChannel,
   logger: Logger,
 ): Promise<GuildSession> {
-  const existing = sessions.get(channel.guild.id);
-  if (existing) {
-    existing.connection.destroy();
-    sessions.delete(channel.guild.id);
+  if (sessions.has(channel.guild.id)) {
+    destroySession(channel.guild.id);
   }
 
   const connection = joinVoiceChannel({
@@ -74,11 +126,22 @@ export async function joinChannel(
     selfDeaf: true,
   });
 
+  connection.on('error', (error) => {
+    logger.error({ err: error, guildId: channel.guild.id }, 'voice connection error');
+  });
+
   try {
     await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
   } catch (error) {
-    connection.destroy();
-    throw new UserFacingError('Failed to join the voice channel in time.', { cause: error });
+    try {
+      connection.destroy();
+    } catch {
+      // ignore
+    }
+    throw new UserFacingError(
+      'Failed to join the voice channel (UDP/voice handshake failed). Check firewall/VPN and try again.',
+      { cause: error },
+    );
   }
 
   const player = createAudioPlayer();
@@ -91,6 +154,7 @@ export async function joinChannel(
     ffmpeg: null,
     volume: 100,
     current: null,
+    channelId: channel.id,
   };
 
   player.on('error', (error) => {
@@ -100,7 +164,16 @@ export async function joinChannel(
   });
 
   connection.on(VoiceConnectionStatus.Disconnected, () => {
-    destroySession(channel.guild.id);
+    void (async () => {
+      try {
+        await Promise.race([
+          entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
+          entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
+        ]);
+      } catch {
+        destroySession(channel.guild.id);
+      }
+    })();
   });
 
   sessions.set(channel.guild.id, session);
@@ -122,7 +195,11 @@ function destroySession(guildId: string): boolean {
   killChild(session.ffmpeg);
   session.ffmpeg = null;
   session.player.stop(true);
-  session.connection.destroy();
+  try {
+    session.connection.destroy();
+  } catch {
+    // ignore
+  }
   sessions.delete(guildId);
   return true;
 }
@@ -137,80 +214,153 @@ export async function playDirectUrl(
   env: Env,
   logger: Logger,
 ): Promise<{ mode: 'copy' | 'transcode' }> {
-  const session = sessions.get(guildId);
-  if (!session) {
-    throw new UserFacingError('I am not in a voice channel. Use `/join` first.');
-  }
+  return playMutex.runExclusive(async () => {
+    const session = sessions.get(guildId);
+    if (!session) {
+      throw new UserFacingError('I am not in a voice channel. Use `/join` first.');
+    }
 
-  if (
-    getActiveStreamCount() >= env.MUSIC_MAX_CONCURRENT_STREAMS &&
-    session.player.state.status === AudioPlayerStatus.Idle &&
-    !session.ffmpeg
-  ) {
-    // Current guild is idle and would become a new stream — check capacity excluding self.
-    const others = getActiveStreamCount();
-    if (others >= env.MUSIC_MAX_CONCURRENT_STREAMS) {
+    const thisGuildBusy = isSessionBusy(session);
+    if (!thisGuildBusy && getActiveStreamCount() >= env.MUSIC_MAX_CONCURRENT_STREAMS) {
       throw new UserFacingError(
         `The host is at capacity (${env.MUSIC_MAX_CONCURRENT_STREAMS} concurrent streams). Try again later.`,
       );
     }
-  }
 
-  killChild(session.ffmpeg);
-  session.ffmpeg = null;
-  session.player.stop(true);
+    killChild(session.ffmpeg);
+    session.ffmpeg = null;
+    session.player.stop(true);
 
-  const volume = session.volume;
-  const args = buildFfmpegArgs(track, {
-    volume,
-    seekMs: 0,
-    opusBitrate: env.MUSIC_OPUS_BITRATE,
-  });
-  const mode = args.includes('copy') ? 'copy' : 'transcode';
+    const volume = session.volume;
+    const args = buildFfmpegArgs(track, {
+      volume,
+      seekMs: 0,
+      opusBitrate: env.MUSIC_OPUS_BITRATE,
+    });
+    const mode = args.includes('copy') ? 'copy' : 'transcode';
 
-  const child = spawn(env.FFMPEG_PATH, [...args], {
-    stdio: ['ignore', 'pipe', 'pipe'],
-    windowsHide: true,
-  });
-  trackedChildren.add(child);
-  session.ffmpeg = child;
-  session.current = track;
+    const child = spawn(env.FFMPEG_PATH, [...args], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+    trackedChildren.add(child);
+    session.ffmpeg = child;
+    session.current = track;
 
-  child.stderr.on('data', (chunk: Buffer) => {
-    const text = chunk.toString('utf8').trim();
-    if (text.length > 0) {
-      logger.debug({ guildId, ffmpeg: text }, 'ffmpeg stderr');
-    }
-  });
+    let stderrBuf = '';
+    child.stderr?.on('data', (chunk: Buffer) => {
+      const text = chunk.toString('utf8').trim();
+      if (text.length === 0) {
+        return;
+      }
+      stderrBuf = `${stderrBuf}\n${text}`.slice(-4_000);
+      const lower = text.toLowerCase();
+      if (lower.includes('error') || lower.includes('404') || lower.includes('failed')) {
+        logger.warn({ guildId, ffmpeg: text }, 'ffmpeg stderr');
+      } else {
+        logger.debug({ guildId, ffmpeg: text }, 'ffmpeg stderr');
+      }
+    });
 
-  child.on('error', (error) => {
-    logger.error({ err: error, guildId }, 'ffmpeg spawn failed');
-    trackedChildren.delete(child);
-    if (session.ffmpeg === child) {
+    child.on('error', (error) => {
+      logger.error({ err: error, guildId }, 'ffmpeg spawn failed');
+      trackedChildren.delete(child);
+      if (session.ffmpeg === child) {
+        session.ffmpeg = null;
+      }
+    });
+
+    child.on('close', (code) => {
+      trackedChildren.delete(child);
+      if (session.ffmpeg === child) {
+        session.ffmpeg = null;
+      }
+      if (code !== 0 && code !== null) {
+        logger.warn({ guildId, code, stderr: stderrBuf.slice(-500) }, 'ffmpeg exited with error');
+      } else {
+        logger.debug({ guildId, code }, 'ffmpeg exited');
+      }
+    });
+
+    if (!child.stdout) {
+      killChild(child);
       session.ffmpeg = null;
+      throw new UserFacingError('FFmpeg failed to open a stdout pipe.');
     }
-  });
 
-  child.on('close', (code) => {
-    trackedChildren.delete(child);
-    if (session.ffmpeg === child) {
+    try {
+      await waitForStreamData(child.stdout, 8_000);
+    } catch (error) {
+      killChild(child);
       session.ffmpeg = null;
+      logger.warn(
+        { guildId, stderr: stderrBuf.slice(-500), err: error },
+        'ffmpeg produced no audio',
+      );
+      throw new UserFacingError(
+        'Could not start audio stream — the URL may be invalid or unreachable.',
+        { cause: error },
+      );
     }
-    logger.debug({ guildId, code }, 'ffmpeg exited');
+
+    const resource = createAudioResource(child.stdout, {
+      inputType: StreamType.OggOpus,
+    });
+    session.player.play(resource);
+
+    logger.info({ guildId, title: track.title, mode, url: track.url }, 'playback started');
+    return { mode };
   });
+}
 
-  if (!child.stdout) {
-    killChild(child);
-    throw new UserFacingError('FFmpeg failed to open a stdout pipe.');
-  }
+function waitForStreamData(stream: NodeJS.ReadableStream, timeoutMs: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
 
-  const resource = createAudioResource(child.stdout, {
-    inputType: StreamType.OggOpus,
+    const cleanup = (): void => {
+      clearTimeout(timer);
+      stream.off('readable', onReadable);
+      stream.off('error', onError);
+      stream.off('end', onEnded);
+      stream.off('close', onEnded);
+    };
+
+    const finish = (fn: () => void): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+      fn();
+    };
+
+    const onReadable = (): void => {
+      finish(() => resolve());
+    };
+
+    const onError = (error: Error): void => {
+      finish(() => reject(error));
+    };
+
+    const onEnded = (): void => {
+      finish(() => reject(new Error('FFmpeg stdout closed before producing audio')));
+    };
+
+    const timer = setTimeout(() => {
+      finish(() => reject(new Error(`No audio data within ${timeoutMs}ms`)));
+    }, timeoutMs);
+
+    const readable = stream as NodeJS.ReadableStream & { readableLength?: number };
+    if ((readable.readableLength ?? 0) > 0) {
+      finish(() => resolve());
+      return;
+    }
+
+    stream.once('readable', onReadable);
+    stream.once('error', onError);
+    stream.once('end', onEnded);
+    stream.once('close', onEnded);
   });
-  session.player.play(resource);
-
-  logger.info({ guildId, title: track.title, mode, url: track.url }, 'playback started');
-  return { mode };
 }
 
 export function setSessionVolume(guildId: string, volume: number): void {

@@ -35,22 +35,29 @@ async function main(): Promise<void> {
 
   const rest = new REST({ version: '10' }).setToken(env.DISCORD_TOKEN);
 
+  if (env.DEV_GUILD_ID) {
+    // Guild-only while developing: avoids duplicate slash entries (global + guild).
+    await rest.put(Routes.applicationCommands(env.DISCORD_CLIENT_ID), { body: [] });
+    logger.info('cleared global commands (DEV_GUILD_ID is set)');
+
+    const guildBody = [...globalCommands, ...ownerCommands].map(toJson);
+    await rest.put(Routes.applicationGuildCommands(env.DISCORD_CLIENT_ID, env.DEV_GUILD_ID), {
+      body: guildBody,
+    });
+    logger.info(
+      { guildId: env.DEV_GUILD_ID, count: guildBody.length },
+      'guild commands registered (dev mode — no global duplicates)',
+    );
+    return;
+  }
+
   logger.info({ count: globalCommands.length }, 'deploying global application commands');
   await rest.put(Routes.applicationCommands(env.DISCORD_CLIENT_ID), {
     body: globalCommands.map(toJson),
   });
   logger.info('global commands registered (can take up to ~1 hour to propagate)');
 
-  if (env.DEV_GUILD_ID) {
-    const guildBody = [...globalCommands, ...ownerCommands].map(toJson);
-    await rest.put(Routes.applicationGuildCommands(env.DISCORD_CLIENT_ID, env.DEV_GUILD_ID), {
-      body: guildBody,
-    });
-    logger.info(
-      { guildId: env.DEV_GUILD_ID, ownerCommands: ownerCommands.length },
-      'guild commands registered (includes owner commands)',
-    );
-  } else if (ownerCommands.length > 0) {
+  if (ownerCommands.length > 0) {
     logger.warn(
       'OWNER commands exist but DEV_GUILD_ID is unset — /owner will not be registered anywhere',
     );

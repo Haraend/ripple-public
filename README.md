@@ -5,7 +5,7 @@ Designed to run on a **Raspberry Pi 3** (arm64, ~1 GB RAM, 32 GB storage).
 
 ## Current phase
 
-**Phase 1 — Core skeleton + voice smoke test** (implemented on `feat/phase-1-core`).
+**Phase 1 — Core skeleton + voice smoke test** (complete and live-verified on `feat/phase-1-core`; merge to `main`, then Phase 2 music).
 
 Later phases (music module, Apex tracker, Pi deployment) live in a local gitignored
 `TODO.md` on the maintainer machine. This file is the public status pointer.
@@ -14,7 +14,7 @@ Later phases (music module, Apex tracker, Pi deployment) live in a local gitigno
 
 | Phase | Scope |
 | --- | --- |
-| 1 | Framework, SQLite settings, `/ping` `/help` `/config` `/owner`, voice smoke (`/join` `/leave` `/play` direct URL) |
+| 1 | Framework, SQLite settings, `/ping` `/help` `/config` `/owner`, voice smoke (`/join` `/leave` `/play` direct URL), SSRF URL guard, busy-channel voice policy |
 | 2 | Full music: yt-dlp, queue, loop, buttons, autoleave, volume/seek hybrid pipeline |
 | 3 | Apex Legends RP tracker with delta-only SQLite writes and channel announcements |
 | 4 | systemd unit, Pi provisioning, on-device validation |

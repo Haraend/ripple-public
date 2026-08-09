@@ -1,3 +1,4 @@
+import { MessageFlags } from 'discord.js';
 import {
   PermissionFlagsBits,
   type ChatInputCommandInteraction,
@@ -167,31 +168,39 @@ export function createInteractionContext(
       if (deferred || interaction.deferred || interaction.replied) {
         return;
       }
-      await interaction.deferReply({ ephemeral });
+      await interaction.deferReply(
+        ephemeral ? { flags: MessageFlags.Ephemeral as const } : {},
+      );
       deferred = true;
     },
     async reply(payload) {
       const body = normalizePayload(payload);
-      const data = {
-        content: body.content,
-        components: body.components as never,
-        embeds: body.embeds as never,
-        ephemeral: body.ephemeral,
-      };
+      const ephemeral = body.ephemeral ?? false;
       if (interaction.deferred || interaction.replied) {
-        await interaction.followUp(data);
+        await interaction.followUp({
+          content: body.content,
+          components: body.components as never,
+          embeds: body.embeds as never,
+          ...(ephemeral ? { flags: MessageFlags.Ephemeral as const } : {}),
+        });
       } else {
-        await interaction.reply(data);
+        await interaction.reply({
+          content: body.content,
+          components: body.components as never,
+          embeds: body.embeds as never,
+          ...(ephemeral ? { flags: MessageFlags.Ephemeral as const } : {}),
+        });
       }
     },
     async editReply(payload) {
       const body = normalizePayload(payload);
       if (!interaction.deferred && !interaction.replied) {
+        const ephemeral = body.ephemeral ?? false;
         await interaction.reply({
           content: body.content,
           components: body.components as never,
           embeds: body.embeds as never,
-          ephemeral: body.ephemeral,
+          ...(ephemeral ? { flags: MessageFlags.Ephemeral as const } : {}),
         });
         return;
       }

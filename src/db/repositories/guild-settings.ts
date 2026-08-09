@@ -35,18 +35,28 @@ export class GuildSettingsRepository {
       return existing;
     }
 
-    const created = this.db
+    this.db
       .insert(guildSettings)
       .values({
         guildId,
         ...DEFAULTS,
         updatedAt: new Date(),
       })
-      .returning()
+      .onConflictDoNothing()
+      .run();
+
+    const row = this.db
+      .select()
+      .from(guildSettings)
+      .where(eq(guildSettings.guildId, guildId))
       .get();
 
-    this.cache.set(guildId, created);
-    return created;
+    if (!row) {
+      throw new Error(`Failed to create guild_settings for ${guildId}`);
+    }
+
+    this.cache.set(guildId, row);
+    return row;
   }
 
   update(

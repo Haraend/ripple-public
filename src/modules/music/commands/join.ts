@@ -1,7 +1,7 @@
 import { SlashCommandBuilder } from 'discord.js';
 import { UserFacingError } from '../../../core/errors.js';
 import type { Command } from '../../../core/types.js';
-import { joinChannel } from '../session-manager.js';
+import { ensureVoiceForMember } from '../session-manager.js';
 
 export const joinCommand: Command = {
   data: new SlashCommandBuilder()
@@ -15,6 +15,8 @@ export const joinCommand: Command = {
       return;
     }
 
+    await ctx.defer(false);
+
     const settings = ctx.client.services.guildSettings.get(ctx.guild.id);
     if (!settings.musicEnabled) {
       throw new UserFacingError('Music is disabled in this server. Ask an admin via `/config`.');
@@ -25,7 +27,7 @@ export const joinCommand: Command = {
       throw new UserFacingError('Join a voice channel first.');
     }
 
-    await joinChannel(channel, ctx.logger);
-    await ctx.reply(`Joined **${channel.name}**.`);
+    await ensureVoiceForMember(ctx.member, ctx.logger);
+    await ctx.editReply(`Joined **${channel.name}**.`);
   },
 };
