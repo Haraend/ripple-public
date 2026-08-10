@@ -4,7 +4,7 @@ Public Discord bot (music + Apex Legends tracker) optimized for Raspberry Pi 3.
 
 ## Current phase
 
-**Phase 2 — Music module** (in progress on `feat/phase-2-music`; queue + resolve throttles landed, autoleave / pause-volume next).
+**Phase 2 — Music module** (in progress on `feat/phase-2-music`; queue/throttles done, autoleave + pause/volume/seek next polish).
 
 Detailed checkbox tasks for Phases 1–4 live in a **gitignored** `TODO.md` on the
 maintainer machine. If you are a fresh clone / cloud agent and do not see

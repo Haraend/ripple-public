@@ -1,6 +1,11 @@
 import type { Env } from '../../config/env.js';
 import { UserFacingError } from '../../core/errors.js';
 import type { Logger } from '../../lib/logger.js';
+import {
+  cancelIdleQueueAutoleave,
+  clearAllAutoleave,
+  scheduleIdleQueueAutoleave,
+} from './autoleave.js';
 import type { ResolvedTrack } from './resolvers/ytdlp.js';
 import {
   getSession,
@@ -37,6 +42,17 @@ const queues = new Map<string, GuildMusicQueue>();
 
 let bridgeInstalled = false;
 
+function syncIdleAutoleave(guildId: string, state: GuildMusicQueue): void {
+  if (state.current === null && state.upcoming.length === 0) {
+    const env = state.env;
+    if (env) {
+      scheduleIdleQueueAutoleave(guildId, env.MUSIC_IDLE_TIMEOUT_MS);
+    }
+    return;
+  }
+  cancelIdleQueueAutoleave(guildId);
+}
+
 /** Wire session Idle/destroy into the queue (call once from music module init). */
 export function initQueueBridge(): void {
   if (bridgeInstalled) {
@@ -56,6 +72,7 @@ export function initQueueBridge(): void {
  *   that player.stop() emits so we do not advance/clear mid-move.
  */
 export function onSessionDestroyed(guildId: string, clearQueue = true): void {
+  clearAllAutoleave(guildId);
   if (clearQueue) {
     queues.delete(guildId);
     return;
@@ -128,17 +145,23 @@ async function startCurrent(
   track: QueuedTrack,
   env: Env,
   logger: Logger,
+  seekMs = 0,
 ): Promise<{ mode: 'copy' | 'transcode' }> {
   const state = getOrCreate(guildId);
   state.env = env;
   state.logger = logger;
   state.current = track;
+  cancelIdleQueueAutoleave(guildId);
   try {
-    return await playDirectUrl(guildId, track, env, logger);
+    return await playDirectUrl(guildId, track, env, logger, {
+      seekMs,
+      durationMs: track.durationMs,
+    });
   } catch (error) {
     if (state.current === track) {
       state.current = null;
     }
+    syncIdleAutoleave(guildId, state);
     throw error;
   }
 }
@@ -168,6 +191,7 @@ export async function enqueueTrack(
       if (state.current === track) {
         state.current = null;
       }
+      syncIdleAutoleave(guildId, state);
       throw error;
     }
   }
@@ -179,6 +203,7 @@ export async function enqueueTrack(
   }
 
   state.upcoming.push(track);
+  cancelIdleQueueAutoleave(guildId);
   return { started: false, position: state.upcoming.length };
 }
 
@@ -191,12 +216,14 @@ async function playNextFromQueue(
   const logger = state.logger;
   if (env === null || logger === null) {
     state.current = null;
+    syncIdleAutoleave(guildId, state);
     return;
   }
 
   const next = state.upcoming.shift();
   if (!next) {
     state.current = null;
+    syncIdleAutoleave(guildId, state);
     return;
   }
 
@@ -207,6 +234,7 @@ async function playNextFromQueue(
     if (error instanceof UserFacingError) {
       state.upcoming.unshift(next);
       state.current = null;
+      syncIdleAutoleave(guildId, state);
       return;
     }
     // Unexpected failure: try one following track, then give up.
@@ -215,6 +243,7 @@ async function playNextFromQueue(
       return;
     }
     state.current = null;
+    syncIdleAutoleave(guildId, state);
   }
 }
 
@@ -290,6 +319,7 @@ export async function stopQueue(guildId: string): Promise<void> {
     state.current = null;
     state.upcoming = [];
     stopPlayback(guildId);
+    syncIdleAutoleave(guildId, state);
   });
 }
 
@@ -313,4 +343,19 @@ export function removeUpcoming(guildId: string, position: number): QueuedTrack {
     throw new UserFacingError('Could not remove that track.');
   }
   return removed;
+}
+
+/** Restart the current track at an offset (volume / seek). */
+export async function restartCurrentAt(
+  guildId: string,
+  seekMs: number,
+): Promise<{ mode: 'copy' | 'transcode' }> {
+  const state = getOrCreate(guildId);
+  const track = state.current;
+  const env = state.env;
+  const logger = state.logger;
+  if (track === null || env === null || logger === null) {
+    throw new UserFacingError('Nothing is playing.');
+  }
+  return startCurrent(guildId, track, env, logger, Math.max(0, seekMs));
 }

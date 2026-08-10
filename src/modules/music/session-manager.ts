@@ -19,6 +19,11 @@ import { Mutex } from '../../lib/mutex.js';
 import { buildFfmpegArgs, type TrackLike } from './stream.js';
 import { assertSafeMediaUrl } from './url-safety.js';
 
+export interface PlayDirectOptions {
+  readonly seekMs?: number;
+  readonly durationMs?: number | null;
+}
+
 interface GuildSession {
   readonly guildId: string;
   connection: VoiceConnection;
@@ -27,6 +32,16 @@ interface GuildSession {
   volume: number;
   current: TrackLike | null;
   channelId: string;
+  /** Base offset passed to FFmpeg `-ss` for this spawn. */
+  seekOffsetMs: number;
+  /** Wall clock when the current FFmpeg resource started playing. */
+  startedAtMs: number | null;
+  /** When non-null, playback is paused at this wall time. */
+  pausedAtMs: number | null;
+  accumulatedPauseMs: number;
+  durationMs: number | null;
+  /** Skip one Idle callback (mid-track restart for volume/seek). */
+  ignoreNextIdle: boolean;
 }
 
 type GuildIdHandler = (guildId: string) => void | Promise<void>;
@@ -91,15 +106,78 @@ export function isPlaybackActive(guildId: string): boolean {
   return isSessionBusy(session);
 }
 
+function resetPosition(session: GuildSession): void {
+  session.seekOffsetMs = 0;
+  session.startedAtMs = null;
+  session.pausedAtMs = null;
+  session.accumulatedPauseMs = 0;
+  session.durationMs = null;
+}
+
+/** Estimate current playback position in ms (includes seek offset, excludes pause time). */
+export function getPlaybackPositionMs(guildId: string, nowMs: number = Date.now()): number {
+  const session = sessions.get(guildId);
+  if (!session || session.startedAtMs === null) {
+    return session?.seekOffsetMs ?? 0;
+  }
+  const endMs = session.pausedAtMs ?? nowMs;
+  const elapsed = Math.max(0, endMs - session.startedAtMs - session.accumulatedPauseMs);
+  const position = session.seekOffsetMs + elapsed;
+  if (session.durationMs !== null && session.durationMs > 0) {
+    return Math.min(position, session.durationMs);
+  }
+  return position;
+}
+
+export function isPaused(guildId: string): boolean {
+  const session = sessions.get(guildId);
+  if (!session) {
+    return false;
+  }
+  return session.player.state.status === AudioPlayerStatus.Paused;
+}
+
+export function pausePlayback(guildId: string): void {
+  const session = sessions.get(guildId);
+  if (!session || !session.current) {
+    throw new UserFacingError('Nothing is playing.');
+  }
+  if (session.player.state.status === AudioPlayerStatus.Paused) {
+    throw new UserFacingError('Playback is already paused.');
+  }
+  if (session.player.state.status !== AudioPlayerStatus.Playing) {
+    throw new UserFacingError('Nothing is playing.');
+  }
+  session.player.pause(true);
+  session.pausedAtMs = Date.now();
+}
+
+export function resumePlayback(guildId: string): void {
+  const session = sessions.get(guildId);
+  if (!session || !session.current) {
+    throw new UserFacingError('Nothing is playing.');
+  }
+  if (session.player.state.status !== AudioPlayerStatus.Paused) {
+    throw new UserFacingError('Playback is not paused.');
+  }
+  if (session.pausedAtMs !== null) {
+    session.accumulatedPauseMs += Date.now() - session.pausedAtMs;
+    session.pausedAtMs = null;
+  }
+  session.player.unpause();
+}
+
 /** Stop current FFmpeg/player without destroying the voice connection. */
 export function stopPlayback(guildId: string): void {
   const session = sessions.get(guildId);
   if (!session) {
     return;
   }
+  session.ignoreNextIdle = true;
   killChild(session.ffmpeg);
   session.ffmpeg = null;
   session.current = null;
+  resetPosition(session);
   session.player.stop(true);
 }
 
@@ -195,6 +273,12 @@ export async function joinChannel(
     volume: 100,
     current: null,
     channelId: channel.id,
+    seekOffsetMs: 0,
+    startedAtMs: null,
+    pausedAtMs: null,
+    accumulatedPauseMs: 0,
+    durationMs: null,
+    ignoreNextIdle: false,
   };
 
   player.on('error', (error) => {
@@ -204,6 +288,10 @@ export async function joinChannel(
   });
 
   player.on(AudioPlayerStatus.Idle, () => {
+    if (session.ignoreNextIdle) {
+      session.ignoreNextIdle = false;
+      return;
+    }
     void Promise.resolve(playerIdleHandler?.(channel.guild.id)).catch((error: unknown) => {
       logger.warn({ err: error, guildId: channel.guild.id }, 'queue idle handler failed');
     });
@@ -265,6 +353,7 @@ export async function playDirectUrl(
   track: TrackLike,
   env: Env,
   logger: Logger,
+  options: PlayDirectOptions = {},
 ): Promise<{ mode: 'copy' | 'transcode' }> {
   return playMutex.runExclusive(async () => {
     // Re-check on every playback (loop / queue / cache) to close DNS-rebinding SSRF.
@@ -282,6 +371,11 @@ export async function playDirectUrl(
       );
     }
 
+    const seekMs = Math.max(0, options.seekMs ?? 0);
+    // Avoid queue auto-advance when replacing an active stream (volume/seek restart).
+    if (isSessionBusy(session)) {
+      session.ignoreNextIdle = true;
+    }
     killChild(session.ffmpeg);
     session.ffmpeg = null;
     session.player.stop(true);
@@ -289,7 +383,7 @@ export async function playDirectUrl(
     const volume = session.volume;
     const args = buildFfmpegArgs(track, {
       volume,
-      seekMs: 0,
+      seekMs,
       opusBitrate: env.MUSIC_OPUS_BITRATE,
     });
     const mode = args.includes('copy') ? 'copy' : 'transcode';
@@ -301,6 +395,11 @@ export async function playDirectUrl(
     trackedChildren.add(child);
     session.ffmpeg = child;
     session.current = track;
+    session.seekOffsetMs = seekMs;
+    session.startedAtMs = Date.now();
+    session.pausedAtMs = null;
+    session.accumulatedPauseMs = 0;
+    session.durationMs = options.durationMs ?? null;
 
     let stderrBuf = '';
     child.stderr?.on('data', (chunk: Buffer) => {
@@ -362,6 +461,8 @@ export async function playDirectUrl(
       inputType: StreamType.OggOpus,
     });
     session.player.play(resource);
+    // Ensure a lingering ignore flag cannot swallow the real track-end Idle.
+    session.ignoreNextIdle = false;
 
     logger.info({ guildId, title: track.title, mode, url: track.url }, 'playback started');
     return { mode };
