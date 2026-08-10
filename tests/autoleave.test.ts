@@ -61,4 +61,27 @@ describe('autoleave timers', () => {
     vi.advanceTimersByTime(120_000);
     expect(leaves).toEqual(['g1']);
   });
+
+  it('does not arm or fire idle-queue leave while humans are in VC', () => {
+    const leaves: string[] = [];
+    let alone = false;
+    initAutoleave(
+      (guildId) => {
+        leaves.push(guildId);
+      },
+      () => alone,
+    );
+
+    scheduleIdleQueueAutoleave('g1', 120_000);
+    expect(hasIdleQueueTimerForTest('g1')).toBe(false);
+    vi.advanceTimersByTime(200_000);
+    expect(leaves).toEqual([]);
+
+    alone = true;
+    scheduleIdleQueueAutoleave('g1', 120_000);
+    expect(hasIdleQueueTimerForTest('g1')).toBe(true);
+    alone = false;
+    vi.advanceTimersByTime(120_000);
+    expect(leaves).toEqual([]);
+  });
 });

@@ -1,8 +1,11 @@
 import type { Event } from '../core/types.js';
 import {
   cancelEmptyChannelAutoleave,
+  cancelIdleQueueAutoleave,
   scheduleEmptyChannelAutoleave,
+  scheduleIdleQueueAutoleave,
 } from '../modules/music/autoleave.js';
+import { getQueueSnapshot } from '../modules/music/queue.js';
 import { getSession } from '../modules/music/session-manager.js';
 
 function channelHasHumans(channel: {
@@ -12,7 +15,7 @@ function channelHasHumans(channel: {
 }
 
 /**
- * Empty-channel autoleave: when the bot is alone in its voice channel, start the timer.
+ * Empty-channel + idle-queue autoleave hooks on voice membership changes.
  */
 export const voiceStateUpdateEvent: Event<'voiceStateUpdate'> = {
   name: 'voiceStateUpdate',
@@ -32,12 +35,16 @@ export const voiceStateUpdateEvent: Event<'voiceStateUpdate'> = {
 
     if (channelHasHumans(channel)) {
       cancelEmptyChannelAutoleave(guildId);
+      cancelIdleQueueAutoleave(guildId);
       return;
     }
 
-    scheduleEmptyChannelAutoleave(
-      guildId,
-      client.services.env.MUSIC_EMPTY_CHANNEL_TIMEOUT_MS,
-    );
+    const env = client.services.env;
+    scheduleEmptyChannelAutoleave(guildId, env.MUSIC_EMPTY_CHANNEL_TIMEOUT_MS);
+
+    const snap = getQueueSnapshot(guildId);
+    if (snap.current === null && snap.upcoming.length === 0) {
+      scheduleIdleQueueAutoleave(guildId, env.MUSIC_IDLE_TIMEOUT_MS);
+    }
   },
 };

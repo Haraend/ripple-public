@@ -4,6 +4,7 @@ import type { Logger } from '../../lib/logger.js';
 import {
   cancelIdleQueueAutoleave,
   clearAllAutoleave,
+  isBotAloneInVoice,
   scheduleIdleQueueAutoleave,
 } from './autoleave.js';
 import type { ResolvedTrack } from './resolvers/ytdlp.js';
@@ -45,8 +46,11 @@ let bridgeInstalled = false;
 function syncIdleAutoleave(guildId: string, state: GuildMusicQueue): void {
   if (state.current === null && state.upcoming.length === 0) {
     const env = state.env;
-    if (env) {
+    // Do not idle-leave while humans are still in the voice channel.
+    if (env && isBotAloneInVoice(guildId)) {
       scheduleIdleQueueAutoleave(guildId, env.MUSIC_IDLE_TIMEOUT_MS);
+    } else {
+      cancelIdleQueueAutoleave(guildId);
     }
     return;
   }

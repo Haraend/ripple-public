@@ -16,12 +16,9 @@ import { stopCommand } from './commands/stop.js';
 import { volumeCommand } from './commands/volume.js';
 import { initQueueBridge } from './queue.js';
 import { killYtDlpChildren } from './resolvers/ytdlp.js';
-import { leaveChannel, shutdownMusicSessions } from './session-manager.js';
+import { getSession, leaveChannel, shutdownMusicSessions } from './session-manager.js';
 
 initQueueBridge();
-initAutoleave((guildId) => {
-  leaveChannel(guildId);
-});
 
 export const musicModule: Module = {
   name: 'music',
@@ -42,6 +39,25 @@ export const musicModule: Module = {
     volumeCommand,
     seekCommand,
   ],
+  async init(client) {
+    initAutoleave(
+      (guildId) => {
+        leaveChannel(guildId);
+      },
+      (guildId) => {
+        const session = getSession(guildId);
+        if (!session) {
+          return true;
+        }
+        const guild = client.guilds.cache.get(guildId);
+        const channel = guild?.channels.cache.get(session.channelId);
+        if (!channel || !channel.isVoiceBased()) {
+          return true;
+        }
+        return !channel.members.some((member) => !member.user.bot);
+      },
+    );
+  },
   async shutdown() {
     clearEveryAutoleave();
     killYtDlpChildren();

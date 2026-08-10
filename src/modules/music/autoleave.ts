@@ -1,11 +1,14 @@
 /**
  * Autoleave timers — empty voice channel and idle empty queue.
- * Leave callback is injected to avoid a circular import with session-manager.
+ * Leave / alone callbacks are injected to avoid circular imports.
  */
 
 type LeaveFn = (guildId: string) => void;
+/** True when the bot should treat the VC as empty of humans (alone or unknown). */
+type IsAloneFn = (guildId: string) => boolean;
 
 let leaveGuild: LeaveFn = () => undefined;
+let isAloneInVoice: IsAloneFn = () => true;
 
 interface GuildAutoleave {
   emptyChannel: ReturnType<typeof setTimeout> | null;
@@ -15,8 +18,13 @@ interface GuildAutoleave {
 const timers = new Map<string, GuildAutoleave>();
 
 /** Wire once from the music module. */
-export function initAutoleave(leaveFn: LeaveFn): void {
+export function initAutoleave(leaveFn: LeaveFn, isAloneFn: IsAloneFn = () => true): void {
   leaveGuild = leaveFn;
+  isAloneInVoice = isAloneFn;
+}
+
+export function isBotAloneInVoice(guildId: string): boolean {
+  return isAloneInVoice(guildId);
 }
 
 function getOrCreate(guildId: string): GuildAutoleave {
@@ -72,16 +80,30 @@ export function scheduleEmptyChannelAutoleave(guildId: string, timeoutMs: number
   clearTimer(state.emptyChannel);
   state.emptyChannel = setTimeout(() => {
     state.emptyChannel = null;
+    if (!isAloneInVoice(guildId)) {
+      return;
+    }
     leaveGuild(guildId);
   }, timeoutMs);
 }
 
-/** Start/replace idle leave when the guild queue is empty and nothing is playing. */
+/**
+ * Start/replace idle leave when the guild queue is empty.
+ * Only arms (and only fires) while the bot is alone in the voice channel —
+ * humans staying in VC after the last track must not be disconnected by this timer.
+ */
 export function scheduleIdleQueueAutoleave(guildId: string, timeoutMs: number): void {
+  if (!isAloneInVoice(guildId)) {
+    cancelIdleQueueAutoleave(guildId);
+    return;
+  }
   const state = getOrCreate(guildId);
   clearTimer(state.idleQueue);
   state.idleQueue = setTimeout(() => {
     state.idleQueue = null;
+    if (!isAloneInVoice(guildId)) {
+      return;
+    }
     leaveGuild(guildId);
   }, timeoutMs);
 }
@@ -93,6 +115,7 @@ export function resetAutoleaveForTests(): void {
     clearAllAutoleave(guildId);
   }
   leaveGuild = () => undefined;
+  isAloneInVoice = () => true;
 }
 
 export function hasEmptyChannelTimerForTest(guildId: string): boolean {
