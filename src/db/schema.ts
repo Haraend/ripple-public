@@ -4,6 +4,8 @@ import { integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 export const guildSettings = sqliteTable('guild_settings', {
   guildId: text('guild_id').primaryKey(),
   apexChannelId: text('apex_channel_id'),
+  /** Optional text channel for the sticky now-playing control panel. */
+  musicChannelId: text('music_channel_id'),
   djRoleId: text('dj_role_id'),
   djModeEnabled: integer('dj_mode_enabled', { mode: 'boolean' }).notNull().default(false),
   musicEnabled: integer('music_enabled', { mode: 'boolean' }).notNull().default(true),
