@@ -69,3 +69,19 @@ describe('deferThen', () => {
     expect(order).toEqual(['defer', 'work-start', 'work-end']);
   });
 });
+
+describe('session remount handler', () => {
+  it('invokes the registered remount hook with resumeMs', async () => {
+    const {
+      setSessionRemountedHandler,
+      fireSessionRemountedForTests,
+    } = await import('../src/modules/music/session-manager.js');
+
+    let seen: { guildId: string; resumeMs: number } | null = null;
+    setSessionRemountedHandler((guildId, resumeMs) => {
+      seen = { guildId, resumeMs };
+    });
+    await fireSessionRemountedForTests('g1', 12_500);
+    expect(seen).toEqual({ guildId: 'g1', resumeMs: 12_500 });
+  });
+});

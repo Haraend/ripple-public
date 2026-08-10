@@ -241,6 +241,7 @@ export function createMessageContext(
         content: body.content,
         components: body.components as never,
         embeds: body.embeds as never,
+        allowedMentions: { parse: [], repliedUser: false },
       });
     },
     async editReply(payload) {
@@ -250,6 +251,7 @@ export function createMessageContext(
           content: body.content,
           components: body.components as never,
           embeds: body.embeds as never,
+          allowedMentions: { parse: [] },
         });
         return;
       }
@@ -257,6 +259,7 @@ export function createMessageContext(
         content: body.content,
         components: body.components as never,
         embeds: body.embeds as never,
+        allowedMentions: { parse: [], repliedUser: false },
       });
     },
   };

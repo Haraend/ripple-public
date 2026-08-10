@@ -25,7 +25,7 @@ export const removeCommand: Command = {
     if (position === null) {
       throw new UserFacingError('Provide a queue position to remove.');
     }
-    const removed = removeUpcoming(ctx.guild.id, position);
+    const removed = await removeUpcoming(ctx.guild.id, position);
     await ctx.reply(`Removed \`${removed.title}\` from position **#${position}**.`);
   },
 };

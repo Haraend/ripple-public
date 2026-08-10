@@ -53,6 +53,10 @@ export const musicModule: Module = {
         schedulePanelClear(guildId, client);
         return;
       }
+      if (event === 'reanchor') {
+        schedulePanelUpsert(guildId, client, { immediate: true, reanchor: true });
+        return;
+      }
       schedulePanelUpsert(guildId, client, { immediate: true });
     });
 

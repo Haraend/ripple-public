@@ -27,6 +27,8 @@ import {
 
 const PANEL_DEBOUNCE_MS = 500;
 const EMBED_COLOR = 0x3d7ea6;
+/** Fixed cell count so short titles still widen the embed. */
+const PROGRESS_BAR_WIDTH = 20;
 
 export type MusicButtonAction = 'prev' | 'pause' | 'resume' | 'skip' | 'loop' | 'stop';
 
@@ -42,6 +44,8 @@ interface PanelRef {
 const panels = new Map<string, PanelRef>();
 const panelMutexes = new Map<string, Mutex>();
 const pendingUpserts = new Map<string, ReturnType<typeof setTimeout>>();
+/** Guilds waiting for a reanchor send (delete + new message at channel bottom). */
+const pendingReanchor = new Set<string>();
 
 function panelMutex(guildId: string): Mutex {
   const existing = panelMutexes.get(guildId);
@@ -68,6 +72,27 @@ function truncate(text: string, max: number): string {
     return text;
   }
   return `${text.slice(0, Math.max(0, max - 1))}…`;
+}
+
+/**
+ * Fixed-width Unicode progress bar (snapshot only — never polled on a timer).
+ * @internal Exported for unit tests.
+ */
+export function buildProgressBar(
+  positionMs: number,
+  durationMs: number | null,
+  width: number = PROGRESS_BAR_WIDTH,
+): string {
+  const posLabel = formatDuration(Math.floor(Math.max(0, positionMs) / 1000));
+  if (durationMs === null || durationMs <= 0) {
+    const empty = '░'.repeat(width);
+    return `${empty} ${posLabel}`;
+  }
+  const ratio = Math.min(1, Math.max(0, positionMs / durationMs));
+  const filled = Math.round(ratio * width);
+  const bar = `${'▓'.repeat(filled)}${'░'.repeat(width - filled)}`;
+  const durLabel = formatDuration(Math.floor(durationMs / 1000));
+  return `${bar} ${posLabel} / ${durLabel}`;
 }
 
 export function musicCustomId(action: MusicButtonAction, token: string): string {
@@ -174,10 +199,7 @@ export function buildNowPlayingPayload(guildId: string): {
   const volume = session?.volume ?? 100;
   const positionMs = getPlaybackPositionMs(guildId);
   const durationMs = track.durationMs;
-  const positionLabel =
-    durationMs !== null && durationMs > 0
-      ? `${formatDuration(Math.floor(positionMs / 1000))} / ${formatDuration(Math.floor(durationMs / 1000))}`
-      : formatDuration(Math.floor(positionMs / 1000));
+  const progressValue = buildProgressBar(positionMs, durationMs);
 
   const upNext =
     snap.upcoming.length === 0
@@ -191,11 +213,11 @@ export function buildNowPlayingPayload(guildId: string): {
     .setTitle(paused ? 'Paused' : 'Now playing')
     .setDescription(`**${truncate(track.title, 200)}**`)
     .addFields(
+      { name: 'Progress', value: progressValue, inline: false },
       { name: 'Requested by', value: `<@${track.requestedBy}>`, inline: true },
-      { name: 'Progress', value: positionLabel, inline: true },
       { name: 'Volume', value: `${volume}%`, inline: true },
       { name: 'Loop', value: loopLabel(snap.loop), inline: true },
-      { name: 'Up next', value: upNext, inline: true },
+      { name: 'Up next', value: upNext, inline: false },
     )
     .setFooter({ text: 'Ripple' });
 
@@ -299,6 +321,7 @@ async function resolvePanelChannelId(
 async function upsertNowPlayingPanelLocked(
   guildId: string,
   client: RippleClient,
+  options: { reanchor: boolean } = { reanchor: false },
 ): Promise<Message | null> {
   const payload = buildNowPlayingPayload(guildId);
   if (payload === null) {
@@ -326,13 +349,15 @@ async function upsertNowPlayingPanelLocked(
     return null;
   }
 
-  // Moving channel (config override or rebind) — delete old message first.
-  if (ref.channelId !== targetChannelId && ref.messageId !== null) {
+  // Re-anchor or move channel: delete old message so the new one sits at channel bottom.
+  const shouldReanchor =
+    options.reanchor || (ref.channelId !== targetChannelId && ref.messageId !== null);
+  if (shouldReanchor && ref.messageId !== null) {
     await deleteMessageQuietly(client, ref.channelId, ref.messageId);
     ref = {
       channelId: targetChannelId,
       messageId: null,
-      sticky: configured === null,
+      sticky: configured === null ? ref.sticky : false,
       generation: ref.generation,
     };
     panels.set(guildId, ref);
@@ -476,8 +501,11 @@ export async function preparePanelRebind(
 export async function upsertNowPlayingPanel(
   guildId: string,
   client: RippleClient,
+  options: { reanchor?: boolean } = {},
 ): Promise<Message | null> {
-  return panelMutex(guildId).runExclusive(() => upsertNowPlayingPanelLocked(guildId, client));
+  return panelMutex(guildId).runExclusive(() =>
+    upsertNowPlayingPanelLocked(guildId, client, { reanchor: options.reanchor === true }),
+  );
 }
 
 /** Delete the tracked message but keep channelId for a later repost. */
@@ -500,26 +528,34 @@ export async function forgetPanel(guildId: string, client: RippleClient): Promis
 export function schedulePanelUpsert(
   guildId: string,
   client: RippleClient,
-  options: { immediate?: boolean } = {},
+  options: { immediate?: boolean; reanchor?: boolean } = {},
 ): void {
+  if (options.reanchor === true) {
+    pendingReanchor.add(guildId);
+  }
+
   const existing = pendingUpserts.get(guildId);
   if (existing !== undefined) {
     clearTimeout(existing);
     pendingUpserts.delete(guildId);
   }
 
-  if (options.immediate) {
-    void upsertNowPlayingPanel(guildId, client).catch((error: unknown) => {
+  const run = (): void => {
+    const reanchor = pendingReanchor.has(guildId);
+    pendingReanchor.delete(guildId);
+    void upsertNowPlayingPanel(guildId, client, { reanchor }).catch((error: unknown) => {
       client.services.logger.warn({ err: error, guildId }, 'now-playing panel upsert failed');
     });
+  };
+
+  if (options.immediate) {
+    run();
     return;
   }
 
   const timer = setTimeout(() => {
     pendingUpserts.delete(guildId);
-    void upsertNowPlayingPanel(guildId, client).catch((error: unknown) => {
-      client.services.logger.warn({ err: error, guildId }, 'now-playing panel upsert failed');
-    });
+    run();
   }, PANEL_DEBOUNCE_MS);
   timer.unref();
   pendingUpserts.set(guildId, timer);
@@ -531,6 +567,7 @@ export function schedulePanelClear(guildId: string, client: RippleClient): void 
     clearTimeout(existing);
     pendingUpserts.delete(guildId);
   }
+  pendingReanchor.delete(guildId);
   void clearNowPlayingPanel(guildId, client).catch((error: unknown) => {
     client.services.logger.warn({ err: error, guildId }, 'now-playing panel clear failed');
   });
@@ -542,6 +579,7 @@ export function schedulePanelForget(guildId: string, client: RippleClient): void
     clearTimeout(existing);
     pendingUpserts.delete(guildId);
   }
+  pendingReanchor.delete(guildId);
   void forgetPanel(guildId, client).catch((error: unknown) => {
     client.services.logger.warn({ err: error, guildId }, 'now-playing panel forget failed');
   });
@@ -553,6 +591,7 @@ export function resetNowPlayingPanelForTests(): void {
     clearTimeout(timer);
   }
   pendingUpserts.clear();
+  pendingReanchor.clear();
   panels.clear();
   panelMutexes.clear();
 }

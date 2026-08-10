@@ -64,9 +64,14 @@ type SessionDestroyedHandler = (
   guildId: string,
   clearQueue: boolean,
 ) => void | Promise<void>;
+type SessionRemountedHandler = (
+  guildId: string,
+  resumeMs: number,
+) => void | Promise<void>;
 
 let playerIdleHandler: GuildIdHandler | null = null;
 let sessionDestroyedHandler: SessionDestroyedHandler | null = null;
+let sessionRemountedHandler: SessionRemountedHandler | null = null;
 
 /** Avoid circular imports: queue registers Idle / destroy hooks at module init. */
 export function setPlayerIdleHandler(handler: GuildIdHandler): void {
@@ -75,6 +80,19 @@ export function setPlayerIdleHandler(handler: GuildIdHandler): void {
 
 export function setSessionDestroyedHandler(handler: SessionDestroyedHandler): void {
   sessionDestroyedHandler = handler;
+}
+
+/** Fired after a full remount kept the queue — restart current track at resumeMs. */
+export function setSessionRemountedHandler(handler: SessionRemountedHandler): void {
+  sessionRemountedHandler = handler;
+}
+
+/** @internal */
+export async function fireSessionRemountedForTests(
+  guildId: string,
+  resumeMs: number,
+): Promise<void> {
+  await sessionRemountedHandler?.(guildId, resumeMs);
 }
 
 const sessions = new Map<string, GuildSession>();
@@ -413,6 +431,8 @@ async function joinChannelUnlocked(
 
   const previousToken = existing?.sessionToken;
   const previousVolume = existing?.volume ?? 100;
+  const remountResumeMs = existing ? getPlaybackPositionMs(guildId) : 0;
+  const didRemount = Boolean(existing);
 
   if (existing) {
     // Full remount fallback — keep queue; preserve token below.
@@ -464,6 +484,15 @@ async function joinChannelUnlocked(
 
   sessions.set(guildId, session);
   logger.info({ guildId, channelId: channel.id }, 'joined voice channel');
+
+  if (didRemount) {
+    void Promise.resolve(sessionRemountedHandler?.(guildId, remountResumeMs)).catch(
+      (error: unknown) => {
+        logger.warn({ err: error, guildId }, 'session remount resume handler failed');
+      },
+    );
+  }
+
   return session;
 }
 

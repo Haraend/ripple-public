@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   bindPanelMessage,
   buildNowPlayingPayload,
+  buildProgressBar,
   clearNowPlayingPanel,
   forgetPanel,
   getPanelRefForTests,
@@ -21,6 +22,21 @@ describe('music customId', () => {
   it('rejects malformed ids', () => {
     expect(parseMusicCustomId('music:skip')).toBeNull();
     expect(parseMusicCustomId('other:skip:tok')).toBeNull();
+  });
+});
+
+describe('buildProgressBar', () => {
+  it('renders a fixed-width bar with time labels', () => {
+    const bar = buildProgressBar(60_000, 240_000, 20);
+    expect(bar.startsWith('▓▓▓▓▓')).toBe(true);
+    expect(bar).toContain('1:00 / 4:00');
+    expect(bar.replace(/[^▓░]/gu, '').length).toBe(20);
+  });
+
+  it('handles unknown duration without shrinking width', () => {
+    const bar = buildProgressBar(12_000, null, 20);
+    expect(bar.replace(/[^▓░]/gu, '').length).toBe(20);
+    expect(bar).toContain('0:12');
   });
 });
 

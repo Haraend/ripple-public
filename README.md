@@ -15,7 +15,7 @@ local gitignored `TODO.md` on the maintainer machine. This file is the public st
 | Phase | Scope |
 | --- | --- |
 | 1 | Framework, SQLite settings, `/ping` `/help` `/config` `/owner`, voice smoke (`/join` `/leave` `/play` direct URL), SSRF URL guard, busy-channel voice policy |
-| 2 | Full music: yt-dlp, GuildPlayer queue, loop, now-playing buttons, music-channel config, autoleave, volume/seek hybrid pipeline |
+| 2 | Full music: yt-dlp, GuildPlayer queue, loop, now-playing buttons (re-anchor on track change), music-channel config, autoleave, volume/seek hybrid pipeline |
 | 3 | Apex Legends RP tracker with delta-only SQLite writes and channel announcements |
 | 4 | systemd unit, Pi provisioning, on-device validation |
 

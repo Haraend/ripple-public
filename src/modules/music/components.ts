@@ -114,7 +114,7 @@ export async function runMusicButtonAction(
   await deferThen(deferUpdate, async () => {
     switch (action) {
       case 'prev':
-        await previousTrack(guildId);
+        await previousTrack(guildId, { panel: 'upsert' });
         after.onUpsert();
         break;
       case 'pause':
@@ -126,7 +126,7 @@ export async function runMusicButtonAction(
         after.onUpsert();
         break;
       case 'skip': {
-        const { next } = await skipTrack(guildId);
+        const { next } = await skipTrack(guildId, { panel: 'upsert' });
         after.onSkip(next);
         break;
       }

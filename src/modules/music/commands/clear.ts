@@ -13,7 +13,7 @@ export const clearCommand: Command = {
     if (!ctx.guild) {
       return;
     }
-    const removed = clearUpcoming(ctx.guild.id);
+    const removed = await clearUpcoming(ctx.guild.id);
     await ctx.reply(
       removed === 0
         ? 'The queue was already empty.'

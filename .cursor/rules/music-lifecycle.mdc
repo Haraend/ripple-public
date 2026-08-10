@@ -16,6 +16,8 @@ alwaysApply: false
 - Unplayable start failures may skip-ahead with a small budget; capacity must not.
 - Re-resolve stream URLs at play time via `sourceKey` / track cache (`ensureFreshStreamUrl`). Treat `url` as ephemeral.
 - Exactly **one** now-playing control message per guild. Delete the old message before rebind. Prefer `/config music-channel`; else sticky first `/play` channel.
+- Re-anchor (delete + resend at channel bottom) when a **new track starts** via idle auto-advance or slash/prefix skip/previous; **edit in place** for button skip/prev/pause/resume/loop and same-track volume/seek. Never poll the panel on a timer.
+- After a voice remount that keeps the queue, resume the current track at the captured position (edit panel, do not re-anchor).
 - Reject outdated panel buttons by session token **and** live message id.
 - `sessionToken` rotates only on full voice teardown (leave / autoleave / hard disconnect), not remount.
 - Kill every FFmpeg / yt-dlp child on skip, stop, leave, destroy, and process shutdown.

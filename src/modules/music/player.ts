@@ -28,6 +28,7 @@ import {
   playDirectUrl,
   setPlayerIdleHandler,
   setSessionDestroyedHandler,
+  setSessionRemountedHandler,
   stopPlayback,
 } from './session-manager.js';
 
@@ -51,7 +52,7 @@ export interface QueueSnapshot {
   readonly historyLength: number;
 }
 
-type PanelEvent = 'upsert' | 'clear' | 'forget';
+type PanelEvent = 'upsert' | 'reanchor' | 'clear' | 'forget';
 type PanelNotify = (guildId: string, event: PanelEvent) => void;
 
 export interface FreshResolveContext {
@@ -234,6 +235,7 @@ async function startCurrentUnlocked(
   state: GuildPlayerState,
   track: QueuedTrack,
   seekMs = 0,
+  panelEvent: 'reanchor' | 'upsert' = 'reanchor',
 ): Promise<{ mode: 'copy' | 'transcode' }> {
   const env = state.env;
   const logger = state.logger;
@@ -262,7 +264,7 @@ async function startCurrentUnlocked(
       seekMs,
       durationMs: playable.durationMs,
     });
-    notifyPanel(guildId, 'upsert');
+    notifyPanel(guildId, panelEvent);
     return result;
   } catch (error) {
     if (error instanceof CapacityError) {
@@ -290,12 +292,13 @@ async function processQueueUnlocked(
   guildId: string,
   state: GuildPlayerState,
   skipAheadBudget: number,
+  panelEvent: 'reanchor' | 'upsert' = 'reanchor',
 ): Promise<void> {
   if (state.destroyed) {
     return;
   }
 
-// Already streaming — nothing to do (Idle clears this before advance).
+  // Already streaming — nothing to do (Idle clears this before advance).
   if (isPlaybackActive(guildId)) {
     return;
   }
@@ -312,7 +315,7 @@ async function processQueueUnlocked(
   // Retry current that is waiting on capacity.
   if (state.current !== null && !isPlaybackActive(guildId)) {
     try {
-      await startCurrentUnlocked(guildId, state, state.current);
+      await startCurrentUnlocked(guildId, state, state.current, 0, panelEvent);
       return;
     } catch (error) {
       if (error instanceof CapacityError) {
@@ -336,7 +339,7 @@ async function processQueueUnlocked(
   }
 
   try {
-    await startCurrentUnlocked(guildId, state, next);
+    await startCurrentUnlocked(guildId, state, next, 0, panelEvent);
   } catch (error) {
     if (error instanceof CapacityError) {
       // startCurrentUnlocked already kept current + scheduled retry
@@ -344,7 +347,7 @@ async function processQueueUnlocked(
     }
     logger.warn({ err: error, guildId, title: next.title }, 'failed to start next queued track');
     if (skipAheadBudget > 0 && state.upcoming.length > 0) {
-      await processQueueUnlocked(guildId, state, skipAheadBudget - 1);
+      await processQueueUnlocked(guildId, state, skipAheadBudget - 1, panelEvent);
       return;
     }
     state.current = null;
@@ -356,7 +359,7 @@ async function processQueueUnlocked(
   }
 }
 
-/** Wire session Idle/destroy into the player (call once from music module init). */
+/** Wire session Idle/destroy/remount into the player (call once from music module init). */
 export function initQueueBridge(): void {
   if (bridgeInstalled) {
     return;
@@ -367,6 +370,35 @@ export function initQueueBridge(): void {
   });
   setSessionDestroyedHandler((guildId, clearQueue) => {
     onSessionDestroyed(guildId, clearQueue);
+  });
+  setSessionRemountedHandler((guildId, resumeMs) => {
+    void resumeAfterRemount(guildId, resumeMs);
+  });
+}
+
+async function resumeAfterRemount(guildId: string, resumeMs: number): Promise<void> {
+  await runInLane(guildId, async () => {
+    const state = players.get(guildId);
+    if (!state || state.destroyed || state.current === null) {
+      return;
+    }
+    if (state.env === null || state.logger === null) {
+      return;
+    }
+    try {
+      await startCurrentUnlocked(
+        guildId,
+        state,
+        state.current,
+        Math.max(0, resumeMs),
+        'upsert',
+      );
+    } catch (error) {
+      if (error instanceof CapacityError) {
+        return;
+      }
+      state.logger.warn({ err: error, guildId }, 'failed to resume track after remount');
+    }
   });
 }
 
@@ -546,7 +578,9 @@ export async function handlePlayerIdle(guildId: string): Promise<void> {
 
 export async function skipTrack(
   guildId: string,
+  options: { panel?: 'reanchor' | 'upsert' } = {},
 ): Promise<{ skipped: QueuedTrack | null; next: QueuedTrack | null; upcomingCount: number }> {
+  const panelEvent = options.panel ?? 'reanchor';
   return runInLane(guildId, async () => {
     const state = getOrCreate(guildId);
     if (state.current === null && state.upcoming.length === 0) {
@@ -562,7 +596,7 @@ export async function skipTrack(
     state.ignoreNextIdle = true;
     cancelCapacityRetry(state);
     stopPlayback(guildId);
-    await processQueueUnlocked(guildId, state, SKIP_AHEAD_BUDGET);
+    await processQueueUnlocked(guildId, state, SKIP_AHEAD_BUDGET, panelEvent);
     return {
       skipped,
       next: state.current,
@@ -576,7 +610,9 @@ export async function skipTrack(
  */
 export async function previousTrack(
   guildId: string,
+  options: { panel?: 'reanchor' | 'upsert' } = {},
 ): Promise<{ current: QueuedTrack; upcomingCount: number }> {
+  const panelEvent = options.panel ?? 'reanchor';
   return runInLane(guildId, async () => {
     const state = getOrCreate(guildId);
     if (state.env === null || state.logger === null) {
@@ -595,7 +631,7 @@ export async function previousTrack(
     state.ignoreNextIdle = true;
     cancelCapacityRetry(state);
     stopPlayback(guildId);
-    await startCurrentUnlocked(guildId, state, prev);
+    await startCurrentUnlocked(guildId, state, prev, 0, panelEvent);
     return {
       current: prev,
       upcomingCount: state.upcoming.length,
@@ -617,32 +653,36 @@ export async function stopQueue(guildId: string): Promise<void> {
   });
 }
 
-export function clearUpcoming(guildId: string): number {
-  const state = getOrCreate(guildId);
-  const removed = state.upcoming.length;
-  state.upcoming = [];
-  if (state.current !== null) {
-    notifyPanel(guildId, 'upsert');
-  }
-  return removed;
+export async function clearUpcoming(guildId: string): Promise<number> {
+  return runInLane(guildId, async () => {
+    const state = getOrCreate(guildId);
+    const removed = state.upcoming.length;
+    state.upcoming = [];
+    if (state.current !== null) {
+      notifyPanel(guildId, 'upsert');
+    }
+    return removed;
+  });
 }
 
 /** Remove 1-based upcoming index. */
-export function removeUpcoming(guildId: string, position: number): QueuedTrack {
-  const state = getOrCreate(guildId);
-  if (!Number.isInteger(position) || position < 1 || position > state.upcoming.length) {
-    throw new UserFacingError(
-      `Invalid position. Use a number from 1 to ${Math.max(state.upcoming.length, 0)}.`,
-    );
-  }
-  const [removed] = state.upcoming.splice(position - 1, 1);
-  if (!removed) {
-    throw new UserFacingError('Could not remove that track.');
-  }
-  if (state.current !== null) {
-    notifyPanel(guildId, 'upsert');
-  }
-  return removed;
+export async function removeUpcoming(guildId: string, position: number): Promise<QueuedTrack> {
+  return runInLane(guildId, async () => {
+    const state = getOrCreate(guildId);
+    if (!Number.isInteger(position) || position < 1 || position > state.upcoming.length) {
+      throw new UserFacingError(
+        `Invalid position. Use a number from 1 to ${Math.max(state.upcoming.length, 0)}.`,
+      );
+    }
+    const [removed] = state.upcoming.splice(position - 1, 1);
+    if (!removed) {
+      throw new UserFacingError('Could not remove that track.');
+    }
+    if (state.current !== null) {
+      notifyPanel(guildId, 'upsert');
+    }
+    return removed;
+  });
 }
 
 /**
@@ -666,7 +706,7 @@ export async function restartCurrentAt(
       return { mode: 'copy', applied: false };
     }
 
-    const { mode } = await startCurrentUnlocked(guildId, state, track, Math.max(0, seekMs));
+    const { mode } = await startCurrentUnlocked(guildId, state, track, Math.max(0, seekMs), 'upsert');
     return { mode, applied: true };
   });
 }

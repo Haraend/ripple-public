@@ -51,10 +51,16 @@ export async function handlePrefixMessage(client: RippleClient, message: Message
     await command.execute(ctx);
   } catch (error) {
     if (error instanceof UserFacingError) {
-      await message.reply(error.message);
+      await message.reply({
+        content: error.message,
+        allowedMentions: { parse: [], repliedUser: false },
+      });
       return;
     }
     logger.error({ err: error }, 'prefix command failed');
-    await message.reply('Something went wrong while running that command.');
+    await message.reply({
+      content: 'Something went wrong while running that command.',
+      allowedMentions: { parse: [], repliedUser: false },
+    });
   }
 }

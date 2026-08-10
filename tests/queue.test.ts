@@ -22,6 +22,8 @@ import { createLogger } from '../src/lib/logger.js';
 
 const playing = new Set<string>();
 const joined = new Set<string>();
+let remountHandler: ((guildId: string, resumeMs: number) => void | Promise<void>) | null =
+  null;
 let playImpl: (
   guildId: string,
   track: { title: string },
@@ -43,6 +45,11 @@ vi.mock('../src/modules/music/session-manager.js', () => ({
   },
   setPlayerIdleHandler: () => undefined,
   setSessionDestroyedHandler: () => undefined,
+  setSessionRemountedHandler: (
+    handler: (guildId: string, resumeMs: number) => void | Promise<void>,
+  ) => {
+    remountHandler = handler;
+  },
 }));
 
 function track(title: string, requestedBy = 'user'): QueuedTrack {
@@ -72,6 +79,7 @@ describe('music queue', () => {
   beforeEach(() => {
     playing.clear();
     joined.clear();
+    remountHandler = null;
     playImpl = async (guildId, t) => {
       playing.add(guildId);
       void t;
@@ -143,9 +151,9 @@ describe('music queue', () => {
     const skipped = await skipTrack('g1');
     expect(skipped.skipped?.title).toBe('a');
     expect(skipped.next?.title).toBe('b');
-    const removed = removeUpcoming('g1', 1);
+    const removed = await removeUpcoming('g1', 1);
     expect(removed.title).toBe('c');
-    expect(clearUpcoming('g1')).toBe(0);
+    expect(await clearUpcoming('g1')).toBe(0);
     await stopQueue('g1');
     expect(getQueueSnapshot('g1').current).toBeNull();
   });
@@ -154,7 +162,29 @@ describe('music queue', () => {
     const { env, logger } = deps();
     await enqueueTrack('g1', track('a'), env, logger, 100);
     await enqueueTrack('g1', track('b'), env, logger, 100);
-    expect(() => removeUpcoming('g1', 9)).toThrow(UserFacingError);
+    await expect(removeUpcoming('g1', 9)).rejects.toBeInstanceOf(UserFacingError);
+  });
+
+  it('remount handler restarts current track after playback dropped', async () => {
+    const { env, logger } = deps();
+    await enqueueTrack('g1', track('a'), env, logger, 100);
+    await enqueueTrack('g1', track('b'), env, logger, 100);
+    expect(remountHandler).not.toBeNull();
+    playing.delete('g1');
+    onSessionDestroyed('g1', false);
+    await remountHandler?.('g1', 4_000);
+    expect(playing.has('g1')).toBe(true);
+    expect(getQueueSnapshot('g1').current?.title).toBe('a');
+    expect(getQueueSnapshot('g1').upcoming.map((t) => t.title)).toEqual(['b']);
+  });
+
+  it('button-style skip with panel upsert still advances', async () => {
+    const { env, logger } = deps();
+    await enqueueTrack('g1', track('a'), env, logger, 100);
+    await enqueueTrack('g1', track('b'), env, logger, 100);
+    const result = await skipTrack('g1', { panel: 'upsert' });
+    expect(result.skipped?.title).toBe('a');
+    expect(result.next?.title).toBe('b');
   });
 
   it('concurrent enqueue starts one and queues the other', async () => {
