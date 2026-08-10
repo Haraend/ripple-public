@@ -1,13 +1,15 @@
 import { SlashCommandBuilder } from 'discord.js';
 import { UserFacingError } from '../../../core/errors.js';
 import type { Command } from '../../../core/types.js';
+import { enqueueTrack } from '../queue.js';
 import { resolveQuery } from '../resolvers/index.js';
-import { ensureVoiceForMember, playDirectUrl, setSessionVolume } from '../session-manager.js';
+import { ensureVoiceForMember, setSessionVolume } from '../session-manager.js';
+import { acquireResolveSlot, releaseResolveSlot } from '../throttle.js';
 
 export const playCommand: Command = {
   data: new SlashCommandBuilder()
     .setName('play')
-    .setDescription('Play YouTube, SoundCloud, Spotify track (if configured), or a direct URL')
+    .setDescription('Play or queue YouTube, SoundCloud, Spotify track, or a direct URL')
     .addStringOption((option) =>
       option
         .setName('url')
@@ -32,23 +34,41 @@ export const playCommand: Command = {
     const raw = ctx.options.getString('url', true) ?? ctx.options.getRest() ?? '';
     const url = raw.trim();
 
-    const track = await resolveQuery(url, {
-      env: ctx.client.services.env,
-      trackCache: ctx.client.services.trackCache,
-      logger: ctx.logger,
-    });
-
     await ensureVoiceForMember(ctx.member, ctx.logger);
     setSessionVolume(ctx.guild.id, settings.defaultVolume);
 
-    const { mode } = await playDirectUrl(
-      ctx.guild.id,
-      track,
-      ctx.client.services.env,
-      ctx.logger,
-    );
-    await ctx.editReply(
-      `Playing \`${track.title}\` (FFmpeg **${mode}** mode, volume ${settings.defaultVolume}).`,
-    );
+    const env = ctx.client.services.env;
+    acquireResolveSlot(ctx.guild.id, ctx.user.id, env);
+    try {
+      const track = await resolveQuery(url, {
+        env,
+        trackCache: ctx.client.services.trackCache,
+        logger: ctx.logger,
+      });
+
+      const maxQueue = Math.min(env.MUSIC_MAX_QUEUE_SIZE, settings.maxQueueSize);
+      const result = await enqueueTrack(
+        ctx.guild.id,
+        {
+          ...track,
+          requestedBy: ctx.user.id,
+        },
+        env,
+        ctx.logger,
+        maxQueue,
+      );
+
+      if (result.started) {
+        await ctx.editReply(
+          `Playing \`${track.title}\` (FFmpeg **${result.mode ?? 'transcode'}** mode, volume ${settings.defaultVolume}).`,
+        );
+      } else {
+        await ctx.editReply(
+          `Queued \`${track.title}\` at position **#${result.position}**.`,
+        );
+      }
+    } finally {
+      releaseResolveSlot(ctx.guild.id);
+    }
   },
 };

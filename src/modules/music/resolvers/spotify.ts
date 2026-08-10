@@ -21,6 +21,7 @@ const trackResponseSchema = z.object({
 
 const SPOTIFY_TRACK_PATH = /^\/track\/([a-zA-Z0-9]+)\/?/u;
 const SPOTIFY_URI = /^spotify:track:([a-zA-Z0-9]+)$/u;
+const SPOTIFY_RETRY_WAIT_MAX_MS = 10_000;
 
 export type FetchFn = (
   input: string | URL,
@@ -39,6 +40,48 @@ interface CachedToken {
 }
 
 let cachedToken: CachedToken | null = null;
+
+function parseRetryAfterMs(response: Response): number | null {
+  const header = response.headers.get('retry-after');
+  if (header === null || header.trim().length === 0) {
+    return null;
+  }
+  const asSeconds = Number.parseFloat(header);
+  if (Number.isFinite(asSeconds) && asSeconds >= 0) {
+    return Math.round(asSeconds * 1000);
+  }
+  const asDate = Date.parse(header);
+  if (!Number.isNaN(asDate)) {
+    return Math.max(0, asDate - Date.now());
+  }
+  return null;
+}
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+/**
+ * On 429: wait once if Retry-After ≤ 10s; otherwise throw a visible error.
+ * Returns true if the caller should retry the request once.
+ */
+async function shouldRetryAfterSpotifyRateLimit(
+  response: Response,
+  alreadyRetried: boolean,
+): Promise<boolean> {
+  if (response.status !== 429) {
+    return false;
+  }
+  const retryMs = parseRetryAfterMs(response) ?? 5_000;
+  const waitSec = Math.max(1, Math.ceil(retryMs / 1000));
+  if (!alreadyRetried && retryMs <= SPOTIFY_RETRY_WAIT_MAX_MS) {
+    await sleep(retryMs);
+    return true;
+  }
+  throw new UserFacingError(`Spotify is rate-limiting us — try again in ${waitSec}s.`);
+}
 
 /** Reset in-memory token cache (tests). */
 export function resetSpotifyTokenCache(): void {
@@ -126,42 +169,55 @@ async function fetchAccessToken(env: Env, fetchFn: FetchFn): Promise<string> {
   }
 
   const basic = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
-  let response: Response;
-  try {
-    response = await fetchFn('https://accounts.spotify.com/api/token', {
-      method: 'POST',
-      headers: {
-        Authorization: `Basic ${basic}`,
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body: 'grant_type=client_credentials',
-      signal: AbortSignal.timeout(8_000),
-    });
-  } catch (error) {
-    throw new UserFacingError('Could not reach Spotify. Try again later.', { cause: error });
-  }
-
-  if (!response.ok) {
-    throw new UserFacingError('Could not authenticate with Spotify.');
-  }
-
-  let json: unknown;
-  try {
-    json = await response.json();
-  } catch (error) {
-    throw new UserFacingError('Could not authenticate with Spotify.', { cause: error });
-  }
-
-  const parsed = tokenResponseSchema.safeParse(json);
-  if (!parsed.success) {
-    throw new UserFacingError('Could not authenticate with Spotify.');
-  }
-
-  cachedToken = {
-    accessToken: parsed.data.access_token,
-    expiresAtMs: now + parsed.data.expires_in * 1000,
+  const requestInit: RequestInit = {
+    method: 'POST',
+    headers: {
+      Authorization: `Basic ${basic}`,
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: 'grant_type=client_credentials',
+    signal: AbortSignal.timeout(8_000),
   };
-  return cachedToken.accessToken;
+
+  let alreadyRetried = false;
+  for (;;) {
+    let response: Response;
+    try {
+      response = await fetchFn('https://accounts.spotify.com/api/token', requestInit);
+    } catch (error) {
+      throw new UserFacingError('Could not reach Spotify. Try again later.', { cause: error });
+    }
+
+    if (response.status === 429) {
+      const retry = await shouldRetryAfterSpotifyRateLimit(response, alreadyRetried);
+      if (retry) {
+        alreadyRetried = true;
+        continue;
+      }
+    }
+
+    if (!response.ok) {
+      throw new UserFacingError('Could not authenticate with Spotify.');
+    }
+
+    let json: unknown;
+    try {
+      json = await response.json();
+    } catch (error) {
+      throw new UserFacingError('Could not authenticate with Spotify.', { cause: error });
+    }
+
+    const parsed = tokenResponseSchema.safeParse(json);
+    if (!parsed.success) {
+      throw new UserFacingError('Could not authenticate with Spotify.');
+    }
+
+    cachedToken = {
+      accessToken: parsed.data.access_token,
+      expiresAtMs: now + parsed.data.expires_in * 1000,
+    };
+    return cachedToken.accessToken;
+  }
 }
 
 export async function fetchSpotifyTrackMeta(
@@ -172,40 +228,51 @@ export async function fetchSpotifyTrackMeta(
   const fetchFn = options.fetchFn ?? fetch;
   const token = await fetchAccessToken(env, fetchFn);
 
-  let response: Response;
-  try {
-    response = await fetchFn(`https://api.spotify.com/v1/tracks/${encodeURIComponent(trackId)}`, {
-      headers: { Authorization: `Bearer ${token}` },
-      signal: AbortSignal.timeout(8_000),
-    });
-  } catch (error) {
-    throw new UserFacingError('Could not reach Spotify. Try again later.', { cause: error });
-  }
+  let alreadyRetried = false;
+  for (;;) {
+    let response: Response;
+    try {
+      response = await fetchFn(`https://api.spotify.com/v1/tracks/${encodeURIComponent(trackId)}`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(8_000),
+      });
+    } catch (error) {
+      throw new UserFacingError('Could not reach Spotify. Try again later.', { cause: error });
+    }
 
-  if (response.status === 404) {
-    throw new UserFacingError('That Spotify track was not found.');
-  }
-  if (!response.ok) {
-    throw new UserFacingError('Could not look up that Spotify track.');
-  }
+    if (response.status === 429) {
+      const retry = await shouldRetryAfterSpotifyRateLimit(response, alreadyRetried);
+      if (retry) {
+        alreadyRetried = true;
+        continue;
+      }
+    }
 
-  let json: unknown;
-  try {
-    json = await response.json();
-  } catch (error) {
-    throw new UserFacingError('Could not look up that Spotify track.', { cause: error });
-  }
+    if (response.status === 404) {
+      throw new UserFacingError('That Spotify track was not found.');
+    }
+    if (!response.ok) {
+      throw new UserFacingError('Could not look up that Spotify track.');
+    }
 
-  const parsed = trackResponseSchema.safeParse(json);
-  if (!parsed.success) {
-    throw new UserFacingError('Could not look up that Spotify track.');
-  }
+    let json: unknown;
+    try {
+      json = await response.json();
+    } catch (error) {
+      throw new UserFacingError('Could not look up that Spotify track.', { cause: error });
+    }
 
-  return {
-    id: trackId,
-    title: parsed.data.name,
-    artists: parsed.data.artists.map((artist) => artist.name),
-  };
+    const parsed = trackResponseSchema.safeParse(json);
+    if (!parsed.success) {
+      throw new UserFacingError('Could not look up that Spotify track.');
+    }
+
+    return {
+      id: trackId,
+      title: parsed.data.name,
+      artists: parsed.data.artists.map((artist) => artist.name),
+    };
+  }
 }
 
 export interface ResolveSpotifyOptions {

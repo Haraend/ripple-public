@@ -17,6 +17,7 @@ import { UserFacingError } from '../../core/errors.js';
 import type { Logger } from '../../lib/logger.js';
 import { Mutex } from '../../lib/mutex.js';
 import { buildFfmpegArgs, type TrackLike } from './stream.js';
+import { assertSafeMediaUrl } from './url-safety.js';
 
 interface GuildSession {
   readonly guildId: string;
@@ -26,6 +27,24 @@ interface GuildSession {
   volume: number;
   current: TrackLike | null;
   channelId: string;
+}
+
+type GuildIdHandler = (guildId: string) => void | Promise<void>;
+type SessionDestroyedHandler = (
+  guildId: string,
+  clearQueue: boolean,
+) => void | Promise<void>;
+
+let playerIdleHandler: GuildIdHandler | null = null;
+let sessionDestroyedHandler: SessionDestroyedHandler | null = null;
+
+/** Avoid circular imports: queue registers Idle / destroy hooks at module init. */
+export function setPlayerIdleHandler(handler: GuildIdHandler): void {
+  playerIdleHandler = handler;
+}
+
+export function setSessionDestroyedHandler(handler: SessionDestroyedHandler): void {
+  sessionDestroyedHandler = handler;
 }
 
 const sessions = new Map<string, GuildSession>();
@@ -62,6 +81,26 @@ export function getActiveStreamCount(): number {
 
 function isSessionBusy(session: GuildSession): boolean {
   return session.ffmpeg !== null || session.player.state.status !== AudioPlayerStatus.Idle;
+}
+
+export function isPlaybackActive(guildId: string): boolean {
+  const session = sessions.get(guildId);
+  if (!session) {
+    return false;
+  }
+  return isSessionBusy(session);
+}
+
+/** Stop current FFmpeg/player without destroying the voice connection. */
+export function stopPlayback(guildId: string): void {
+  const session = sessions.get(guildId);
+  if (!session) {
+    return;
+  }
+  killChild(session.ffmpeg);
+  session.ffmpeg = null;
+  session.current = null;
+  session.player.stop(true);
 }
 
 function channelHasOtherHumans(channel: VoiceBasedChannel, botUserId: string): boolean {
@@ -116,7 +155,8 @@ export async function joinChannel(
   logger: Logger,
 ): Promise<GuildSession> {
   if (sessions.has(channel.guild.id)) {
-    destroySession(channel.guild.id);
+    // Channel move remount — keep the guild music queue.
+    destroySession(channel.guild.id, { clearQueue: false });
   }
 
   const connection = joinVoiceChannel({
@@ -163,6 +203,12 @@ export async function joinChannel(
     session.ffmpeg = null;
   });
 
+  player.on(AudioPlayerStatus.Idle, () => {
+    void Promise.resolve(playerIdleHandler?.(channel.guild.id)).catch((error: unknown) => {
+      logger.warn({ err: error, guildId: channel.guild.id }, 'queue idle handler failed');
+    });
+  });
+
   connection.on(VoiceConnectionStatus.Disconnected, () => {
     void (async () => {
       try {
@@ -185,13 +231,19 @@ export function leaveChannel(guildId: string): boolean {
   return destroySession(guildId);
 }
 
-function destroySession(guildId: string): boolean {
+function destroySession(
+  guildId: string,
+  options: { readonly clearQueue?: boolean } = {},
+): boolean {
+  const clearQueue = options.clearQueue ?? true;
   const session = sessions.get(guildId);
   if (!session) {
     const orphan = getVoiceConnection(guildId);
     orphan?.destroy();
     return false;
   }
+  // Notify queue before player.stop so suppressIdle is set before Idle fires (channel moves).
+  sessionDestroyedHandler?.(guildId, clearQueue);
   killChild(session.ffmpeg);
   session.ffmpeg = null;
   session.player.stop(true);
@@ -215,6 +267,9 @@ export async function playDirectUrl(
   logger: Logger,
 ): Promise<{ mode: 'copy' | 'transcode' }> {
   return playMutex.runExclusive(async () => {
+    // Re-check on every playback (loop / queue / cache) to close DNS-rebinding SSRF.
+    await assertSafeMediaUrl(track.url);
+
     const session = sessions.get(guildId);
     if (!session) {
       throw new UserFacingError('I am not in a voice channel. Use `/join` first.');

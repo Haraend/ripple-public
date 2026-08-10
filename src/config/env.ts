@@ -76,6 +76,10 @@ const envSchema = z
     MUSIC_EMPTY_CHANNEL_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
     /** Max track_cache rows (metadata/URLs only). 0 disables caching. */
     MUSIC_TRACK_CACHE_MAX_ROWS: z.coerce.number().int().min(0).default(5000),
+    /** Per-user cooldown between /play resolve starts. */
+    MUSIC_RESOLVE_COOLDOWN_MS: z.coerce.number().int().min(0).default(5_000),
+    /** Max in-flight resolves per guild. */
+    MUSIC_MAX_PENDING_RESOLVES_PER_GUILD: z.coerce.number().int().positive().default(2),
 
     ENABLE_PREFIX_COMMANDS: booleanish.default(false),
     COMMAND_PREFIX: z.string().min(1).max(5).default('!'),

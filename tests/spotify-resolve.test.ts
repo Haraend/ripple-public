@@ -120,6 +120,34 @@ describe('fetchSpotifyTrackMeta', () => {
     expect(calls[1]).toContain('/v1/tracks/11dFghVXANMlKmJXsNCbNl');
   });
 
+  it('surfaces Spotify 429 when Retry-After is too long', async () => {
+    const env = testEnv({
+      SPOTIFY_CLIENT_ID: 'cid',
+      SPOTIFY_CLIENT_SECRET: 'secret',
+    });
+    const fetchFn: FetchFn = async (input) => {
+      const url = String(input);
+      if (url.includes('accounts.spotify.com')) {
+        return jsonResponse({
+          access_token: 'tok',
+          token_type: 'Bearer',
+          expires_in: 3600,
+        });
+      }
+      return new Response('rate limited', {
+        status: 429,
+        headers: { 'Retry-After': '30' },
+      });
+    };
+
+    await expect(
+      fetchSpotifyTrackMeta('4cOdK2wGLETKBW3PvgPWqT', env, { fetchFn }),
+    ).rejects.toMatchObject({
+      name: 'UserFacingError',
+      message: expect.stringContaining('rate-limiting'),
+    });
+  });
+
   it('reuses cached token on second call', async () => {
     const env = testEnv({
       SPOTIFY_CLIENT_ID: 'cid',
