@@ -5,7 +5,7 @@ Designed to run on a **Raspberry Pi 3** (arm64, ~1 GB RAM, 32 GB storage).
 
 ## Current phase
 
-**Phase 2 — Music module** (in progress on `feat/phase-2-music`; yt-dlp, track cache, Spotify, queue, throttles, autoleave, pause/volume/seek).
+**Phase 2 — Music module** (in progress on `feat/phase-2-music`; yt-dlp, track cache, Spotify, GuildPlayer queue lifecycle, now-playing panel, capacity wait/retry, autoleave, pause/volume/seek).
 
 Later phases (Apex tracker, Pi deployment) and remaining Phase 2 checkboxes live in a
 local gitignored `TODO.md` on the maintainer machine. This file is the public status pointer.
@@ -15,7 +15,7 @@ local gitignored `TODO.md` on the maintainer machine. This file is the public st
 | Phase | Scope |
 | --- | --- |
 | 1 | Framework, SQLite settings, `/ping` `/help` `/config` `/owner`, voice smoke (`/join` `/leave` `/play` direct URL), SSRF URL guard, busy-channel voice policy |
-| 2 | Full music: yt-dlp, queue, loop, buttons, autoleave, volume/seek hybrid pipeline |
+| 2 | Full music: yt-dlp, GuildPlayer queue, loop, now-playing buttons, music-channel config, autoleave, volume/seek hybrid pipeline |
 | 3 | Apex Legends RP tracker with delta-only SQLite writes and channel announcements |
 | 4 | systemd unit, Pi provisioning, on-device validation |
 
