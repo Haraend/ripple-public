@@ -1,15 +1,14 @@
 import { SlashCommandBuilder } from 'discord.js';
 import type { Command } from '../../../core/types.js';
-import { getQueueSnapshot } from '../queue.js';
+import { formatDuration } from '../../../lib/format.js';
+import { schedulePanelClear } from '../now-playing-panel.js';
+import { getQueueSnapshot } from '../player.js';
 
-function formatDuration(ms: number | null): string {
+function formatTrackDuration(ms: number | null): string {
   if (ms === null || ms <= 0) {
     return '?:??';
   }
-  const totalSec = Math.round(ms / 1000);
-  const m = Math.floor(totalSec / 60);
-  const s = totalSec % 60;
-  return `${m}:${String(s).padStart(2, '0')}`;
+  return formatDuration(Math.round(ms / 1000));
 }
 
 export const queueCommand: Command = {
@@ -23,6 +22,7 @@ export const queueCommand: Command = {
     }
     const snap = getQueueSnapshot(ctx.guild.id);
     if (snap.current === null && snap.upcoming.length === 0) {
+      schedulePanelClear(ctx.guild.id, ctx.client);
       await ctx.reply('The queue is empty.');
       return;
     }
@@ -30,7 +30,7 @@ export const queueCommand: Command = {
     const lines: string[] = [`Loop: **${snap.loop}**`];
     if (snap.current) {
       lines.push(
-        `Now: **${snap.current.title}** (${formatDuration(snap.current.durationMs)})`,
+        `Now: **${snap.current.title}** (${formatTrackDuration(snap.current.durationMs)})`,
       );
     }
     if (snap.upcoming.length > 0) {
@@ -42,7 +42,7 @@ export const queueCommand: Command = {
           continue;
         }
         lines.push(
-          `**${i + 1}.** ${track.title} (${formatDuration(track.durationMs)})`,
+          `**${i + 1}.** ${track.title} (${formatTrackDuration(track.durationMs)})`,
         );
       }
       if (snap.upcoming.length > shown.length) {

@@ -37,8 +37,13 @@ export const volumeCommand: Command = {
       return;
     }
 
+    const expected = { title: snap.current.title, url: snap.current.url };
     const positionMs = getPlaybackPositionMs(ctx.guild.id);
-    const { mode } = await restartCurrentAt(ctx.guild.id, positionMs);
+    const { mode, applied } = await restartCurrentAt(ctx.guild.id, positionMs, expected);
+    if (!applied) {
+      await ctx.reply(`Volume set to **${level}%** (track changed before restart).`);
+      return;
+    }
     const note =
       level === 100
         ? mode === 'copy'

@@ -34,7 +34,10 @@ async function main(): Promise<void> {
 
   const { db, sqlite } = createDb(env, logger);
   runMigrations(db, logger);
-  const guildSettings = new GuildSettingsRepository(db);
+  const guildSettings = new GuildSettingsRepository(db, {
+    defaultVolume: env.MUSIC_DEFAULT_VOLUME,
+    maxQueueSize: env.MUSIC_MAX_QUEUE_SIZE,
+  });
   const trackCache = new TrackCacheRepository(db, env.MUSIC_TRACK_CACHE_MAX_ROWS);
 
   const client = new RippleClient({

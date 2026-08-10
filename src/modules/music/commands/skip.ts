@@ -12,6 +12,18 @@ export const skipCommand: Command = {
       return;
     }
     const { skipped, next, upcomingCount } = await skipTrack(ctx.guild.id);
+    if (skipped === null) {
+      if (next) {
+        await ctx.reply(`Resumed queue. Now playing \`${next.title}\`.`);
+      } else if (upcomingCount > 0) {
+        await ctx.reply(
+          `Tried to resume the queue — **${upcomingCount}** still queued but could not start. Try \`/skip\` again in a moment.`,
+        );
+      } else {
+        await ctx.reply('Queue is empty.');
+      }
+      return;
+    }
     if (next) {
       await ctx.reply(`Skipped \`${skipped.title}\`. Now playing \`${next.title}\`.`);
     } else if (upcomingCount > 0) {

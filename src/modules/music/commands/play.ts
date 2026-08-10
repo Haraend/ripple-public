@@ -1,19 +1,26 @@
 import { SlashCommandBuilder } from 'discord.js';
 import { UserFacingError } from '../../../core/errors.js';
 import type { Command } from '../../../core/types.js';
-import { enqueueTrack } from '../queue.js';
-import { resolveQuery } from '../resolvers/index.js';
-import { ensureVoiceForMember, setSessionVolume } from '../session-manager.js';
+import { enqueueTrack, getQueueSnapshot } from '../queue.js';
+import { classifyQuery, resolveQuery } from '../resolvers/index.js';
+import { rememberPanelChannel, schedulePanelUpsert } from '../now-playing-panel.js';
+import {
+  ensureVoiceForMember,
+  assertVoiceReady,
+  getSession,
+  isPlaybackActive,
+  setSessionVolume,
+} from '../session-manager.js';
 import { acquireResolveSlot, releaseResolveSlot } from '../throttle.js';
 
 export const playCommand: Command = {
   data: new SlashCommandBuilder()
     .setName('play')
-    .setDescription('Play or queue YouTube, SoundCloud, Spotify track, or a direct URL')
+    .setDescription('Play or queue a song name, YouTube/SoundCloud/Spotify track, or direct URL')
     .addStringOption((option) =>
       option
-        .setName('url')
-        .setDescription('YouTube / SoundCloud / Spotify track / direct http(s) audio URL')
+        .setName('query')
+        .setDescription('Song name or YouTube / SoundCloud / Spotify / direct http(s) URL')
         .setRequired(true),
     ),
   tier: 'dj',
@@ -31,20 +38,39 @@ export const playCommand: Command = {
       throw new UserFacingError('Music is disabled in this server.');
     }
 
-    const raw = ctx.options.getString('url', true) ?? ctx.options.getRest() ?? '';
-    const url = raw.trim();
+    const raw = ctx.options.getString('query', true) ?? ctx.options.getRest() ?? '';
+    const query = raw.trim();
 
     await ensureVoiceForMember(ctx.member, ctx.logger);
-    setSessionVolume(ctx.guild.id, settings.defaultVolume);
+
+    // Only apply guild default volume when starting a fresh idle session — never
+    // overwrite a user `/volume` while something is already playing/queued.
+    const idle =
+      !isPlaybackActive(ctx.guild.id) && getQueueSnapshot(ctx.guild.id).current === null;
+    if (idle) {
+      setSessionVolume(ctx.guild.id, settings.defaultVolume);
+    }
+
+    if (ctx.channel) {
+      rememberPanelChannel(ctx.guild.id, ctx.channel.id);
+    }
 
     const env = ctx.client.services.env;
+    const resolveCtx = {
+      env,
+      trackCache: ctx.client.services.trackCache,
+      logger: ctx.logger,
+    };
+    const kind = classifyQuery(query, resolveCtx);
+
     acquireResolveSlot(ctx.guild.id, ctx.user.id, env);
     try {
-      const track = await resolveQuery(url, {
-        env,
-        trackCache: ctx.client.services.trackCache,
-        logger: ctx.logger,
-      });
+      const track = await resolveQuery(query, resolveCtx);
+
+      // Voice may have dropped during a long resolve — rejoin once under the join mutex.
+      if (!assertVoiceReady(ctx.guild.id)) {
+        await ensureVoiceForMember(ctx.member, ctx.logger);
+      }
 
       const maxQueue = Math.min(env.MUSIC_MAX_QUEUE_SIZE, settings.maxQueueSize);
       const result = await enqueueTrack(
@@ -56,17 +82,25 @@ export const playCommand: Command = {
         env,
         ctx.logger,
         maxQueue,
+        ctx.client.services.trackCache,
       );
 
+      const searchHint = kind === 'search' ? ' (search)' : '';
+      const volume = getSession(ctx.guild.id)?.volume ?? settings.defaultVolume;
       if (result.started) {
         await ctx.editReply(
-          `Playing \`${track.title}\` (FFmpeg **${result.mode ?? 'transcode'}** mode, volume ${settings.defaultVolume}).`,
+          `Playing \`${track.title}\`${searchHint} (FFmpeg **${result.mode ?? 'transcode'}** mode, volume ${volume}).`,
+        );
+      } else if (result.waitingForCapacity) {
+        await ctx.editReply(
+          `Queued \`${track.title}\`${searchHint} — host is at stream capacity; playback will start when a slot frees.`,
         );
       } else {
         await ctx.editReply(
-          `Queued \`${track.title}\` at position **#${result.position}**.`,
+          `Queued \`${track.title}\`${searchHint} at position **#${result.position}**.`,
         );
       }
+      schedulePanelUpsert(ctx.guild.id, ctx.client, { immediate: true });
     } finally {
       releaseResolveSlot(ctx.guild.id);
     }

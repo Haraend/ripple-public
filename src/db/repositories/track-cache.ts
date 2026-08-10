@@ -97,28 +97,6 @@ export class TrackCacheRepository {
     };
   }
 
-  /**
-   * Metadata still valid but stream expired (or always stale stream).
-   * Useful for callers that want title hints; currently resolve path re-fetches fully.
-   */
-  getMetadata(sourceKey: string, nowMs: number = Date.now()): TrackCacheEntry | null {
-    if (!this.enabled) {
-      return null;
-    }
-
-    const row = this.db
-      .select()
-      .from(trackCache)
-      .where(eq(trackCache.sourceKey, sourceKey))
-      .get();
-
-    if (!row || !isMetadataFresh(row.metadataFetchedAt, nowMs)) {
-      return null;
-    }
-
-    return toEntry(row);
-  }
-
   upsert(
     entry: {
       readonly sourceKey: string;

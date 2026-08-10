@@ -2,6 +2,7 @@ import { SlashCommandBuilder } from 'discord.js';
 import { UserFacingError } from '../../../core/errors.js';
 import type { Command } from '../../../core/types.js';
 import { getQueueSnapshot } from '../queue.js';
+import { rememberPanelChannel, schedulePanelUpsert } from '../now-playing-panel.js';
 import { isPaused, resumePlayback } from '../session-manager.js';
 
 export const resumeCommand: Command = {
@@ -20,6 +21,10 @@ export const resumeCommand: Command = {
       throw new UserFacingError('Playback is not paused.');
     }
     resumePlayback(ctx.guild.id);
+    if (ctx.channel) {
+      rememberPanelChannel(ctx.guild.id, ctx.channel.id);
+    }
+    schedulePanelUpsert(ctx.guild.id, ctx.client, { immediate: true });
     await ctx.reply('Resumed.');
   },
 };

@@ -14,11 +14,15 @@ import { seekCommand } from './commands/seek.js';
 import { skipCommand } from './commands/skip.js';
 import { stopCommand } from './commands/stop.js';
 import { volumeCommand } from './commands/volume.js';
-import { initQueueBridge } from './queue.js';
+import { registerMusicComponentHandler } from './components.js';
+import { schedulePanelClear, schedulePanelForget, schedulePanelUpsert } from './now-playing-panel.js';
+import { destroyAllPlayers, initQueueBridge, setPanelNotifyHandler } from './player.js';
+import { startFfmpegReaper, stopFfmpegReaper } from './reaper.js';
 import { killYtDlpChildren } from './resolvers/ytdlp.js';
 import { getSession, leaveChannel, shutdownMusicSessions } from './session-manager.js';
 
 initQueueBridge();
+registerMusicComponentHandler();
 
 export const musicModule: Module = {
   name: 'music',
@@ -40,9 +44,21 @@ export const musicModule: Module = {
     seekCommand,
   ],
   async init(client) {
+    setPanelNotifyHandler((guildId, event) => {
+      if (event === 'forget') {
+        schedulePanelForget(guildId, client);
+        return;
+      }
+      if (event === 'clear') {
+        schedulePanelClear(guildId, client);
+        return;
+      }
+      schedulePanelUpsert(guildId, client, { immediate: true });
+    });
+
     initAutoleave(
       (guildId) => {
-        leaveChannel(guildId);
+        void leaveChannel(guildId);
       },
       (guildId) => {
         const session = getSession(guildId);
@@ -57,10 +73,14 @@ export const musicModule: Module = {
         return !channel.members.some((member) => !member.user.bot);
       },
     );
+
+    startFfmpegReaper(client.services.logger);
   },
   async shutdown() {
+    stopFfmpegReaper();
     clearEveryAutoleave();
     killYtDlpChildren();
+    destroyAllPlayers();
     await shutdownMusicSessions();
   },
 };

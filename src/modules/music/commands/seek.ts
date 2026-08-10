@@ -42,7 +42,12 @@ export const seekCommand: Command = {
       seekMs = Math.min(seekMs, Math.max(0, durationMs - 1000));
     }
 
-    const { mode } = await restartCurrentAt(ctx.guild.id, seekMs);
+    const expected = { title: snap.current.title, url: snap.current.url };
+    const { mode, applied } = await restartCurrentAt(ctx.guild.id, seekMs, expected);
+    if (!applied) {
+      await ctx.reply('Track changed before seek could apply.');
+      return;
+    }
     await ctx.reply(
       `Seeked to **${formatMs(seekMs)}** (FFmpeg **${mode}**).`,
     );

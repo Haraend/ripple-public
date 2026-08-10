@@ -26,6 +26,10 @@ const ytdlpDumpSchema = z.object({
 export interface ResolvedTrack extends TrackLike {
   readonly durationMs: number | null;
   readonly webpageUrl: string;
+  /** yt-dlp / cache key for re-resolve; null for ephemeral direct URLs. */
+  readonly sourceKey: string | null;
+  /** Wall clock when `url` was last fetched; null if unknown. */
+  readonly streamFetchedAtMs: number | null;
 }
 
 export type YtDlpSpawnFn = (
@@ -220,6 +224,8 @@ function parseDump(stdout: string): ResolvedTrack {
     codec: deriveCodec(data.acodec, data.ext),
     durationMs,
     webpageUrl,
+    sourceKey: null,
+    streamFetchedAtMs: null,
   };
 }
 
@@ -261,6 +267,8 @@ export async function resolveWithYtDlp(
         codec: hit.codec,
         durationMs: hit.durationMs,
         webpageUrl: hit.webpageUrl,
+        sourceKey,
+        streamFetchedAtMs: hit.streamFetchedAt.getTime(),
       };
     }
   }
@@ -283,6 +291,8 @@ export async function resolveWithYtDlp(
           codec: hit.codec,
           durationMs: hit.durationMs,
           webpageUrl: hit.webpageUrl,
+          sourceKey,
+          streamFetchedAtMs: hit.streamFetchedAt.getTime(),
         };
       }
     }
@@ -311,7 +321,13 @@ export async function resolveWithYtDlp(
         throw new UserFacingError('Could not resolve that media URL.');
       }
 
-      const track = parseDump(result.stdout);
+      const parsed = parseDump(result.stdout);
+      const nowMs = Date.now();
+      const track: ResolvedTrack = {
+        ...parsed,
+        sourceKey,
+        streamFetchedAtMs: nowMs,
+      };
       cache?.upsert({
         sourceKey,
         webpageUrl: track.webpageUrl,

@@ -17,6 +17,11 @@ import {
   type YtDlpSpawnFn,
 } from './ytdlp.js';
 
+/** Cap free-text search length so yt-dlp argv stays sane. */
+export const MAX_SEARCH_QUERY_LENGTH = 150;
+
+export type QueryKind = 'spotify' | 'ytdlp' | 'direct' | 'search';
+
 export interface ResolveContext {
   readonly env: Env;
   readonly trackCache: TrackCacheRepository;
@@ -26,9 +31,27 @@ export interface ResolveContext {
 }
 
 export interface SourceResolver {
-  readonly id: string;
+  readonly id: QueryKind;
   canHandle(query: string, ctx: ResolveContext): boolean;
   resolve(query: string, ctx: ResolveContext): Promise<ResolvedTrack>;
+}
+
+/**
+ * Build yt-dlp top-hit search input from free text.
+ * Example: Never gonna give you up → ytsearch1:"Never gonna give you up"
+ */
+export function buildTextSearchQuery(query: string): string {
+  const safe = query.trim().replaceAll('"', "'");
+  return `ytsearch1:"${safe}"`;
+}
+
+function looksLikeHttpUrl(query: string): boolean {
+  try {
+    const parsed = new URL(query.trim());
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
 }
 
 const spotifyResolver: SourceResolver = {
@@ -63,12 +86,11 @@ const ytdlpResolver: SourceResolver = {
 const directResolver: SourceResolver = {
   id: 'direct',
   canHandle(query) {
-    try {
-      const parsed = new URL(query.trim());
-      return parsed.protocol === 'http:' || parsed.protocol === 'https:';
-    } catch {
+    // Spotify links are never direct streams (albums/playlists fail in resolveQuery).
+    if (isSpotifyQuery(query)) {
       return false;
     }
+    return looksLikeHttpUrl(query);
   },
   async resolve(query) {
     const url = query.trim();
@@ -81,16 +103,57 @@ const directResolver: SourceResolver = {
       codec,
       durationMs: null,
       webpageUrl: url,
+      sourceKey: null,
+      streamFetchedAtMs: Date.now(),
     };
   },
 };
 
-/** Ordered resolvers: Spotify (when enabled) → yt-dlp hosts → direct HTTP(S). */
+const searchResolver: SourceResolver = {
+  id: 'search',
+  canHandle(query) {
+    const trimmed = query.trim();
+    if (trimmed.length === 0 || trimmed.length > MAX_SEARCH_QUERY_LENGTH) {
+      return false;
+    }
+    if (isSpotifyQuery(trimmed) || looksLikeHttpUrl(trimmed)) {
+      return false;
+    }
+    return true;
+  },
+  resolve(query, ctx) {
+    return resolveWithYtDlp(buildTextSearchQuery(query), ctx.env, {
+      spawnFn: ctx.spawnFn,
+      trackCache: ctx.trackCache,
+      logger: ctx.logger,
+    });
+  },
+};
+
+/** Ordered resolvers: Spotify → yt-dlp hosts → direct HTTP(S) → free-text search. */
 export const sourceResolvers: readonly SourceResolver[] = [
   spotifyResolver,
   ytdlpResolver,
   directResolver,
+  searchResolver,
 ];
+
+/**
+ * Pure routing helper for tests and /play reply copy.
+ * Returns null when no resolver claims the query (after Spotify album/disabled checks in resolveQuery).
+ */
+export function classifyQuery(query: string, ctx: ResolveContext): QueryKind | null {
+  const trimmed = query.trim();
+  if (trimmed.length === 0) {
+    return null;
+  }
+  for (const resolver of sourceResolvers) {
+    if (resolver.canHandle(trimmed, ctx)) {
+      return resolver.id;
+    }
+  }
+  return null;
+}
 
 /**
  * Classify and resolve a /play query to a streamable track.
@@ -103,7 +166,13 @@ export async function resolveQuery(
   const trimmed = query.trim();
   if (trimmed.length === 0) {
     throw new UserFacingError(
-      'Provide a YouTube, SoundCloud, Spotify track, or direct audio URL.',
+      'Provide a song name, or a YouTube, SoundCloud, Spotify track, or direct audio URL.',
+    );
+  }
+
+  if (trimmed.length > MAX_SEARCH_QUERY_LENGTH && !looksLikeHttpUrl(trimmed)) {
+    throw new UserFacingError(
+      `Search query is too long (max ${MAX_SEARCH_QUERY_LENGTH} characters).`,
     );
   }
 
@@ -119,14 +188,21 @@ export async function resolveQuery(
     );
   }
 
+  const kind = classifyQuery(trimmed, ctx);
+  if (kind === null) {
+    throw new UserFacingError(
+      'Provide a song name, or a YouTube, SoundCloud, Spotify track, or direct audio URL.',
+    );
+  }
+
   for (const resolver of sourceResolvers) {
-    if (resolver.canHandle(trimmed, ctx)) {
+    if (resolver.id === kind) {
       return resolver.resolve(trimmed, ctx);
     }
   }
 
   throw new UserFacingError(
-    'Provide a YouTube, SoundCloud, Spotify track, or direct audio URL.',
+    'Provide a song name, or a YouTube, SoundCloud, Spotify track, or direct audio URL.',
   );
 }
 
