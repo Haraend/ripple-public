@@ -7,7 +7,6 @@ import { rememberPanelChannel, schedulePanelUpsert } from '../now-playing-panel.
 import {
   ensureVoiceForMember,
   assertVoiceReady,
-  getSession,
   isPlaybackActive,
   setSessionVolume,
 } from '../session-manager.js';
@@ -86,11 +85,8 @@ export const playCommand: Command = {
       );
 
       const searchHint = kind === 'search' ? ' (search)' : '';
-      const volume = getSession(ctx.guild.id)?.volume ?? settings.defaultVolume;
       if (result.started) {
-        await ctx.editReply(
-          `Playing \`${track.title}\`${searchHint} (FFmpeg **${result.mode ?? 'transcode'}** mode, volume ${volume}).`,
-        );
+        await ctx.editReply(`Playing \`${track.title}\`${searchHint}.`);
       } else if (result.waitingForCapacity) {
         await ctx.editReply(
           `Queued \`${track.title}\`${searchHint} — host is at stream capacity; playback will start when a slot frees.`,

@@ -28,7 +28,7 @@ import {
 const PANEL_DEBOUNCE_MS = 500;
 const EMBED_COLOR = 0x3d7ea6;
 /** Fixed cell count so short titles still widen the embed. */
-const PROGRESS_BAR_WIDTH = 20;
+const PROGRESS_BAR_WIDTH = 28;
 
 export type MusicButtonAction = 'prev' | 'pause' | 'resume' | 'skip' | 'loop' | 'stop';
 
@@ -90,7 +90,7 @@ export function buildProgressBar(
   }
   const ratio = Math.min(1, Math.max(0, positionMs / durationMs));
   const filled = Math.round(ratio * width);
-  const bar = `${'▓'.repeat(filled)}${'░'.repeat(width - filled)}`;
+  const bar = `${'█'.repeat(filled)}${'░'.repeat(width - filled)}`;
   const durLabel = formatDuration(Math.floor(durationMs / 1000));
   return `${bar} ${posLabel} / ${durLabel}`;
 }
@@ -349,9 +349,24 @@ async function upsertNowPlayingPanelLocked(
     return null;
   }
 
+  const channel = await resolveTextChannel(client, targetChannelId);
+  if (!channel) {
+    panels.delete(guildId);
+    return null;
+  }
+
   // Re-anchor or move channel: delete old message so the new one sits at channel bottom.
-  const shouldReanchor =
+  // Skip delete+resend when the panel is already the channel's last message.
+  let shouldReanchor =
     options.reanchor || (ref.channelId !== targetChannelId && ref.messageId !== null);
+  if (
+    shouldReanchor &&
+    ref.messageId !== null &&
+    ref.channelId === targetChannelId &&
+    channel.lastMessageId === ref.messageId
+  ) {
+    shouldReanchor = false;
+  }
   if (shouldReanchor && ref.messageId !== null) {
     await deleteMessageQuietly(client, ref.channelId, ref.messageId);
     ref = {
@@ -368,12 +383,6 @@ async function upsertNowPlayingPanelLocked(
       sticky: configured === null ? ref.sticky : false,
     };
     panels.set(guildId, ref);
-  }
-
-  const channel = await resolveTextChannel(client, targetChannelId);
-  if (!channel) {
-    panels.delete(guildId);
-    return null;
   }
 
   const generation = ref.generation + 1;

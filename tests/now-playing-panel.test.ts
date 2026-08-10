@@ -27,15 +27,15 @@ describe('music customId', () => {
 
 describe('buildProgressBar', () => {
   it('renders a fixed-width bar with time labels', () => {
-    const bar = buildProgressBar(60_000, 240_000, 20);
-    expect(bar.startsWith('▓▓▓▓▓')).toBe(true);
+    const bar = buildProgressBar(60_000, 240_000, 28);
+    expect(bar.startsWith('███████')).toBe(true);
     expect(bar).toContain('1:00 / 4:00');
-    expect(bar.replace(/[^▓░]/gu, '').length).toBe(20);
+    expect(bar.replace(/[^█░]/gu, '').length).toBe(28);
   });
 
   it('handles unknown duration without shrinking width', () => {
-    const bar = buildProgressBar(12_000, null, 20);
-    expect(bar.replace(/[^▓░]/gu, '').length).toBe(20);
+    const bar = buildProgressBar(12_000, null, 28);
+    expect(bar.replace(/[^█░]/gu, '').length).toBe(28);
     expect(bar).toContain('0:12');
   });
 });
