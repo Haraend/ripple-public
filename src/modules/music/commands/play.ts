@@ -1,19 +1,17 @@
 import { SlashCommandBuilder } from 'discord.js';
 import { UserFacingError } from '../../../core/errors.js';
 import type { Command } from '../../../core/types.js';
-import { resolveWithYtDlp, shouldUseYtDlp } from '../resolvers/ytdlp.js';
-import { assertSafeMediaUrl } from '../url-safety.js';
+import { resolveQuery } from '../resolvers/index.js';
 import { ensureVoiceForMember, playDirectUrl, setSessionVolume } from '../session-manager.js';
-import type { TrackLike } from '../stream.js';
 
 export const playCommand: Command = {
   data: new SlashCommandBuilder()
     .setName('play')
-    .setDescription('Play YouTube, SoundCloud, or a direct audio URL')
+    .setDescription('Play YouTube, SoundCloud, Spotify track (if configured), or a direct URL')
     .addStringOption((option) =>
       option
         .setName('url')
-        .setDescription('YouTube/SoundCloud URL or direct http(s) audio URL')
+        .setDescription('YouTube / SoundCloud / Spotify track / direct http(s) audio URL')
         .setRequired(true),
     ),
   tier: 'dj',
@@ -34,22 +32,11 @@ export const playCommand: Command = {
     const raw = ctx.options.getString('url', true) ?? ctx.options.getRest() ?? '';
     const url = raw.trim();
 
-    let track: TrackLike;
-    if (shouldUseYtDlp(url)) {
-      track = await resolveWithYtDlp(url, ctx.client.services.env, {
-        trackCache: ctx.client.services.trackCache,
-        logger: ctx.logger,
-      });
-    } else {
-      await assertSafeMediaUrl(url);
-      const lower = url.toLowerCase();
-      const codec = lower.endsWith('.opus') || lower.endsWith('.ogg') ? 'opus' : 'other';
-      track = {
-        url,
-        title: url.split('/').pop() ?? 'direct-url',
-        codec,
-      };
-    }
+    const track = await resolveQuery(url, {
+      env: ctx.client.services.env,
+      trackCache: ctx.client.services.trackCache,
+      logger: ctx.logger,
+    });
 
     await ensureVoiceForMember(ctx.member, ctx.logger);
     setSessionVolume(ctx.guild.id, settings.defaultVolume);

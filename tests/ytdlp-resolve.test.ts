@@ -4,6 +4,7 @@ import { UserFacingError } from '../src/core/errors.js';
 import type { SpawnCapturedOptions, SpawnResult } from '../src/lib/spawn.js';
 import {
   buildYtDlpArgsForTest,
+  normalizeYtDlpInput,
   resolveWithYtDlp,
   shouldUseYtDlp,
   YTDLP_AUDIO_FORMAT,
@@ -56,14 +57,35 @@ describe('shouldUseYtDlp', () => {
   });
 });
 
+describe('normalizeYtDlpInput', () => {
+  it('strips YouTube radio/playlist query params down to watch?v=', () => {
+    expect(
+      normalizeYtDlpInput(
+        'https://www.youtube.com/watch?v=PCp2iXA1uLE&list=RDPCp2iXA1uLE&start_radio=1',
+      ),
+    ).toBe('https://www.youtube.com/watch?v=PCp2iXA1uLE');
+  });
+
+  it('normalizes youtu.be links with extra params', () => {
+    expect(normalizeYtDlpInput('https://youtu.be/PCp2iXA1uLE?list=RDxxx')).toBe(
+      'https://www.youtube.com/watch?v=PCp2iXA1uLE',
+    );
+  });
+
+  it('leaves ytsearch queries alone', () => {
+    expect(normalizeYtDlpInput('ytsearch1:"Artist Title"')).toBe('ytsearch1:"Artist Title"');
+  });
+});
+
 describe('buildYtDlpArgsForTest', () => {
-  it('includes no-download flags and the audio format selector', () => {
+  it('includes no-download flags, no-playlist, and the audio format selector', () => {
     const env = testEnv();
     const args = buildYtDlpArgsForTest('https://youtu.be/abc', env);
     expect(args).toContain('--dump-single-json');
     expect(args).toContain('--no-download');
     expect(args).toContain('--no-cache-dir');
     expect(args).toContain('--no-part');
+    expect(args).toContain('--no-playlist');
     expect(args).toContain('-f');
     expect(args).toContain(YTDLP_AUDIO_FORMAT);
     expect(args.at(-2)).toBe('--');
@@ -177,7 +199,7 @@ describe('resolveWithYtDlp', () => {
       runMigrations(db, logger);
       const trackCache = new TrackCacheRepository(db, 100);
       trackCache.upsert({
-        sourceKey: 'https://youtu.be/cached',
+        sourceKey: 'https://www.youtube.com/watch?v=cached',
         webpageUrl: 'https://www.youtube.com/watch?v=cached',
         title: 'From Cache',
         durationMs: 5_000,

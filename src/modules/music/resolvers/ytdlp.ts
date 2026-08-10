@@ -71,6 +71,59 @@ function isSoundcloudHost(hostname: string): boolean {
   return host === 'soundcloud.com' || host.endsWith('.soundcloud.com');
 }
 
+/**
+ * Strip playlist/radio/mix query params that make yt-dlp crawl huge mix playlists
+ * (and blow past our 30s timeout). Keep a single-video watch URL.
+ */
+export function normalizeYtDlpInput(query: string): string {
+  const trimmed = query.trim();
+  if (
+    trimmed.startsWith('ytsearch') ||
+    trimmed.startsWith('scsearch') ||
+    trimmed.startsWith('ytsearchdate')
+  ) {
+    return trimmed;
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return trimmed;
+  }
+
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return trimmed;
+  }
+
+  const host = parsed.hostname.toLowerCase();
+  if (host === 'youtu.be') {
+    const id = parsed.pathname.replace(/^\//u, '').split('/')[0];
+    if (id && id.length > 0) {
+      return `https://www.youtube.com/watch?v=${encodeURIComponent(id)}`;
+    }
+    return trimmed;
+  }
+
+  if (isYoutubeHost(host)) {
+    const videoId = parsed.searchParams.get('v');
+    if (videoId !== null && videoId.length > 0) {
+      return `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`;
+    }
+    // /shorts/ID, /embed/ID, /live/ID
+    const parts = parsed.pathname.split('/').filter((part) => part.length > 0);
+    if (
+      parts.length >= 2 &&
+      (parts[0] === 'shorts' || parts[0] === 'embed' || parts[0] === 'live') &&
+      parts[1] !== undefined
+    ) {
+      return `https://www.youtube.com/watch?v=${encodeURIComponent(parts[1])}`;
+    }
+  }
+
+  return trimmed;
+}
+
 /** True when the query is a YouTube or SoundCloud URL that should go through yt-dlp. */
 export function shouldUseYtDlp(query: string): boolean {
   let parsed: URL;
@@ -107,6 +160,7 @@ function buildArgs(query: string, env: Env): string[] {
     '--no-download',
     '--no-cache-dir',
     '--no-part',
+    '--no-playlist',
     '-f',
     YTDLP_AUDIO_FORMAT,
   ];
@@ -117,6 +171,28 @@ function buildArgs(query: string, env: Env): string[] {
   return args;
 }
 
+function unwrapDump(raw: unknown): unknown {
+  if (typeof raw !== 'object' || raw === null) {
+    return raw;
+  }
+  if (!('url' in raw) && 'entries' in raw) {
+    const entries = Reflect.get(raw, 'entries');
+    if (Array.isArray(entries)) {
+      for (const entry of entries) {
+        if (
+          typeof entry === 'object' &&
+          entry !== null &&
+          'url' in entry &&
+          typeof Reflect.get(entry, 'url') === 'string'
+        ) {
+          return entry;
+        }
+      }
+    }
+  }
+  return raw;
+}
+
 function parseDump(stdout: string): ResolvedTrack {
   let raw: unknown;
   try {
@@ -125,7 +201,7 @@ function parseDump(stdout: string): ResolvedTrack {
     throw new UserFacingError('Could not parse media metadata.', { cause: error });
   }
 
-  const parsed = ytdlpDumpSchema.safeParse(raw);
+  const parsed = ytdlpDumpSchema.safeParse(unwrapDump(raw));
   if (!parsed.success) {
     throw new UserFacingError('Could not resolve that media URL.');
   }
@@ -163,11 +239,12 @@ export async function resolveWithYtDlp(
   env: Env,
   options: ResolveWithYtDlpOptions = {},
 ): Promise<ResolvedTrack> {
-  const query = queryOrUrl.trim();
-  if (query.length === 0) {
+  const trimmed = queryOrUrl.trim();
+  if (trimmed.length === 0) {
     throw new UserFacingError('Provide a YouTube or SoundCloud URL.');
   }
 
+  const query = normalizeYtDlpInput(trimmed);
   const sourceKey = query;
   const cache = options.trackCache;
 
@@ -227,6 +304,10 @@ export async function resolveWithYtDlp(
       });
 
       if (result.code !== 0) {
+        options.logger?.warn(
+          { sourceKey, code: result.code, stderr: result.stderr.slice(-500) },
+          'yt-dlp exited with error',
+        );
         throw new UserFacingError('Could not resolve that media URL.');
       }
 
@@ -253,8 +334,10 @@ export async function resolveWithYtDlp(
         throw error;
       }
       if (error instanceof Error && error.message.includes('timed out')) {
+        options.logger?.warn({ sourceKey, err: error }, 'yt-dlp timed out');
         throw new UserFacingError('Timed out while resolving that URL.', { cause: error });
       }
+      options.logger?.warn({ sourceKey, err: error }, 'yt-dlp resolve failed');
       throw new UserFacingError('Could not resolve that media URL.', { cause: error });
     }
   });
