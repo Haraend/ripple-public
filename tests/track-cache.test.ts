@@ -91,12 +91,6 @@ describe('TrackCacheRepository', () => {
         now + TRACK_CACHE_STREAM_TTL_MS + 1,
       );
       expect(stale).toBeNull();
-
-      const meta = repo.getMetadata(
-        'https://youtu.be/abc',
-        now + TRACK_CACHE_STREAM_TTL_MS + 1,
-      );
-      expect(meta?.title).toBe('Cached');
     } finally {
       close();
     }

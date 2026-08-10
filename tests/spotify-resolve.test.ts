@@ -15,6 +15,9 @@ import {
   type FetchFn,
 } from '../src/modules/music/resolvers/spotify.js';
 import {
+  buildTextSearchQuery,
+  classifyQuery,
+  MAX_SEARCH_QUERY_LENGTH,
   resolveQuery,
   sourceResolvers,
   type ResolveContext,
@@ -264,10 +267,32 @@ describe('resolveQuery classification', () => {
   }
 
   it('lists expected resolver order', () => {
-    expect(sourceResolvers.map((r) => r.id)).toEqual(['spotify', 'ytdlp', 'direct']);
+    expect(sourceResolvers.map((r) => r.id)).toEqual(['spotify', 'ytdlp', 'direct', 'search']);
   });
 
-  it('routes YouTube via ytdlp and rejects garbage', async () => {
+  it('classifies queries without spawning', () => {
+    const context = ctx({
+      SPOTIFY_CLIENT_ID: 'cid',
+      SPOTIFY_CLIENT_SECRET: 'secret',
+    });
+    try {
+      expect(classifyQuery('https://www.youtube.com/watch?v=jNQXAC9IVRw', context)).toBe(
+        'ytdlp',
+      );
+      expect(classifyQuery('https://soundcloud.com/artist/track', context)).toBe('ytdlp');
+      expect(classifyQuery('https://cdn.example.com/a.opus', context)).toBe('direct');
+      expect(classifyQuery('Never gonna give you up', context)).toBe('search');
+      expect(
+        classifyQuery('https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT', context),
+      ).toBe('spotify');
+      expect(classifyQuery('https://open.spotify.com/album/abc', context)).toBeNull();
+      expect(classifyQuery('   ', context)).toBeNull();
+    } finally {
+      context.close();
+    }
+  });
+
+  it('routes YouTube via ytdlp and free text via search', async () => {
     const context = ctx();
     try {
       const track = await resolveQuery('https://www.youtube.com/watch?v=jNQXAC9IVRw', {
@@ -276,7 +301,26 @@ describe('resolveQuery classification', () => {
       });
       expect(track.title).toBe('Zoo');
 
-      await expect(resolveQuery('not a url', context)).rejects.toBeInstanceOf(UserFacingError);
+      let searchArg: string | undefined;
+      const searchSpawn: YtDlpSpawnFn = async (_cmd, args) => {
+        searchArg = args[args.length - 1];
+        return mockYoutubeSpawn(_cmd, args);
+      };
+      const searched = await resolveQuery('Never gonna give you up', {
+        ...context,
+        spawnFn: searchSpawn,
+      });
+      expect(searched.title).toBe('Zoo');
+      expect(searchArg).toBe(buildTextSearchQuery('Never gonna give you up'));
+      expect(searchArg).toContain('ytsearch1:');
+
+      await expect(resolveQuery('   ', context)).rejects.toBeInstanceOf(UserFacingError);
+      await expect(
+        resolveQuery('x'.repeat(MAX_SEARCH_QUERY_LENGTH + 1), context),
+      ).rejects.toMatchObject({
+        name: 'UserFacingError',
+        message: expect.stringContaining('too long'),
+      });
     } finally {
       context.close();
     }

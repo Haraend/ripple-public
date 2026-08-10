@@ -136,6 +136,8 @@ describe('resolveWithYtDlp', () => {
     expect(track.webpageUrl).toBe('https://www.youtube.com/watch?v=abc');
     expect(track.durationMs).toBe(125_400);
     expect(track.codec).toBe('opus');
+    expect(track.sourceKey).toBe('https://www.youtube.com/watch?v=abc');
+    expect(track.streamFetchedAtMs).toBeTypeOf('number');
   });
 
   it('maps non-zero exit to UserFacingError', async () => {

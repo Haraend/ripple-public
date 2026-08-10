@@ -5,19 +5,23 @@ import {
   handlePlayerIdle,
   initQueueBridge,
   onSessionDestroyed,
+  previousTrack,
   removeUpcoming,
   clearUpcoming,
   resetQueueBridgeForTests,
+  restartCurrentAt,
+  setFreshUrlResolverForTests,
   setLoopMode,
   skipTrack,
   stopQueue,
   type QueuedTrack,
 } from '../src/modules/music/queue.js';
-import { UserFacingError } from '../src/core/errors.js';
+import { CapacityError, UserFacingError } from '../src/core/errors.js';
 import { parseEnv, resetEnvCache } from '../src/config/env.js';
 import { createLogger } from '../src/lib/logger.js';
 
 const playing = new Set<string>();
+const joined = new Set<string>();
 let playImpl: (
   guildId: string,
   track: { title: string },
@@ -28,9 +32,12 @@ let playImpl: (
 };
 
 vi.mock('../src/modules/music/session-manager.js', () => ({
-  getSession: (guildId: string) => (playing.has(guildId) ? { guildId } : undefined),
+  getSession: (guildId: string) => (joined.has(guildId) ? { guildId } : undefined),
   isPlaybackActive: (guildId: string) => playing.has(guildId),
-  playDirectUrl: async (guildId: string, track: { title: string }) => playImpl(guildId, track),
+  playDirectUrl: async (guildId: string, track: { title: string }) => {
+    joined.add(guildId);
+    return playImpl(guildId, track);
+  },
   stopPlayback: (guildId: string) => {
     playing.delete(guildId);
   },
@@ -45,6 +52,8 @@ function track(title: string, requestedBy = 'user'): QueuedTrack {
     codec: 'opus',
     durationMs: 60_000,
     webpageUrl: `https://www.youtube.com/watch?v=${title}`,
+    sourceKey: `https://www.youtube.com/watch?v=${title}`,
+    streamFetchedAtMs: Date.now(),
     requestedBy,
   };
 }
@@ -62,6 +71,7 @@ function deps() {
 describe('music queue', () => {
   beforeEach(() => {
     playing.clear();
+    joined.clear();
     playImpl = async (guildId, t) => {
       playing.add(guildId);
       void t;
@@ -69,14 +79,17 @@ describe('music queue', () => {
     };
     resetEnvCache();
     resetQueueBridgeForTests();
+    setFreshUrlResolverForTests(async (t) => t);
     initQueueBridge();
   });
 
   afterEach(() => {
     playing.clear();
+    joined.clear();
     resetEnvCache();
     resetQueueBridgeForTests();
     vi.clearAllMocks();
+    vi.useRealTimers();
   });
 
   it('starts first track and queues the second', async () => {
@@ -95,6 +108,7 @@ describe('music queue', () => {
     const { env, logger } = deps();
     await enqueueTrack('g1', track('a'), env, logger, 100);
     await enqueueTrack('g1', track('b'), env, logger, 100);
+    playing.delete('g1');
     await handlePlayerIdle('g1');
     expect(getQueueSnapshot('g1').current?.title).toBe('b');
     expect(getQueueSnapshot('g1').upcoming).toHaveLength(0);
@@ -104,6 +118,7 @@ describe('music queue', () => {
     const { env, logger } = deps();
     await enqueueTrack('g1', track('a'), env, logger, 100);
     setLoopMode('g1', 'track');
+    playing.delete('g1');
     await handlePlayerIdle('g1');
     expect(getQueueSnapshot('g1').current?.title).toBe('a');
   });
@@ -113,6 +128,7 @@ describe('music queue', () => {
     await enqueueTrack('g1', track('a'), env, logger, 100);
     await enqueueTrack('g1', track('b'), env, logger, 100);
     setLoopMode('g1', 'queue');
+    playing.delete('g1');
     await handlePlayerIdle('g1');
     const snap = getQueueSnapshot('g1');
     expect(snap.current?.title).toBe('b');
@@ -125,7 +141,7 @@ describe('music queue', () => {
     await enqueueTrack('g1', track('b'), env, logger, 100);
     await enqueueTrack('g1', track('c'), env, logger, 100);
     const skipped = await skipTrack('g1');
-    expect(skipped.skipped.title).toBe('a');
+    expect(skipped.skipped?.title).toBe('a');
     expect(skipped.next?.title).toBe('b');
     const removed = removeUpcoming('g1', 1);
     expect(removed.title).toBe('c');
@@ -170,20 +186,53 @@ describe('music queue', () => {
     expect(getQueueSnapshot('g1').upcoming.map((t) => t.title)).toEqual(['b']);
   });
 
-  it('does not skip ahead on UserFacingError capacity during auto-advance', async () => {
+  it('preserves queued tracks on CapacityError and retries after backoff', async () => {
+    vi.useFakeTimers();
     const { env, logger } = deps();
     await enqueueTrack('g1', track('a'), env, logger, 100);
     await enqueueTrack('g1', track('b'), env, logger, 100);
     await enqueueTrack('g1', track('c'), env, logger, 100);
 
     playImpl = async () => {
-      throw new UserFacingError('The host is at capacity (2 concurrent streams). Try again later.');
+      throw new CapacityError(
+        'The host is at capacity (2 concurrent streams). Queued tracks will start when a slot frees.',
+      );
     };
 
+    playing.delete('g1');
     await handlePlayerIdle('g1');
-    const snap = getQueueSnapshot('g1');
-    expect(snap.current).toBeNull();
-    expect(snap.upcoming.map((t) => t.title)).toEqual(['b', 'c']);
+    let snap = getQueueSnapshot('g1');
+    expect(snap.current?.title).toBe('b');
+    expect(snap.upcoming.map((t) => t.title)).toEqual(['c']);
+
+    playImpl = async (guildId, t) => {
+      playing.add(guildId);
+      void t;
+      return { mode: 'copy' };
+    };
+
+    await vi.advanceTimersByTimeAsync(3_000);
+    await vi.waitFor(() => {
+      expect(playing.has('g1')).toBe(true);
+    });
+    snap = getQueueSnapshot('g1');
+    expect(snap.current?.title).toBe('b');
+    expect(snap.upcoming.map((t) => t.title)).toEqual(['c']);
+  });
+
+  it('restartCurrentAt no-ops when expected track no longer current', async () => {
+    const { env, logger } = deps();
+    await enqueueTrack('g1', track('a'), env, logger, 100);
+    await enqueueTrack('g1', track('b'), env, logger, 100);
+    await skipTrack('g1');
+    expect(getQueueSnapshot('g1').current?.title).toBe('b');
+
+    const result = await restartCurrentAt('g1', 5_000, {
+      title: 'a',
+      url: 'https://cdn.example.com/a.webm',
+    });
+    expect(result.applied).toBe(false);
+    expect(getQueueSnapshot('g1').current?.title).toBe('b');
   });
 
   it('overlapping idle and skip does not drop or duplicate tracks', async () => {
@@ -192,6 +241,7 @@ describe('music queue', () => {
     await enqueueTrack('g1', track('b'), env, logger, 100);
     await enqueueTrack('g1', track('c'), env, logger, 100);
 
+    playing.delete('g1');
     const idlePromise = handlePlayerIdle('g1');
     const skipPromise = skipTrack('g1');
     await Promise.all([idlePromise, skipPromise]);
@@ -217,6 +267,7 @@ describe('music queue', () => {
     expect(snap.upcoming.map((t) => t.title)).toEqual(['b']);
 
     // Idle from player.stop during remount must not advance the preserved queue.
+    playing.delete('g1');
     await handlePlayerIdle('g1');
     const afterIdle = getQueueSnapshot('g1');
     expect(afterIdle.current?.title).toBe('a');
@@ -227,20 +278,123 @@ describe('music queue', () => {
     expect(getQueueSnapshot('g1').upcoming).toHaveLength(0);
   });
 
-  it('skip reports upcomingCount when next start fails', async () => {
+  it('skip drops failed next tracks and continues when possible', async () => {
     const { env, logger } = deps();
     await enqueueTrack('g1', track('a'), env, logger, 100);
     await enqueueTrack('g1', track('b'), env, logger, 100);
     await enqueueTrack('g1', track('c'), env, logger, 100);
 
     playImpl = async () => {
-      throw new UserFacingError('The host is at capacity (2 concurrent streams). Try again later.');
+      throw new UserFacingError('Could not start audio stream — the URL may be invalid or unreachable.');
     };
 
     const result = await skipTrack('g1');
-    expect(result.skipped.title).toBe('a');
+    expect(result.skipped?.title).toBe('a');
     expect(result.next).toBeNull();
-    expect(result.upcomingCount).toBe(2);
-    expect(getQueueSnapshot('g1').upcoming.map((t) => t.title)).toEqual(['b', 'c']);
+    expect(result.upcomingCount).toBe(0);
+    expect(getQueueSnapshot('g1').upcoming).toHaveLength(0);
+  });
+
+  it('idle advance skips unplayable next and starts the following track', async () => {
+    const { env, logger } = deps();
+    await enqueueTrack('g1', track('a'), env, logger, 100);
+    await enqueueTrack('g1', track('b'), env, logger, 100);
+    await enqueueTrack('g1', track('c'), env, logger, 100);
+
+    let attempts = 0;
+    playImpl = async (guildId, t) => {
+      attempts += 1;
+      if (t.title === 'b') {
+        throw new UserFacingError('Could not start audio stream — the URL may be invalid or unreachable.');
+      }
+      playing.add(guildId);
+      return { mode: 'copy' };
+    };
+
+    playing.delete('g1');
+    await handlePlayerIdle('g1');
+    expect(getQueueSnapshot('g1').current?.title).toBe('c');
+    expect(getQueueSnapshot('g1').upcoming).toHaveLength(0);
+    expect(attempts).toBeGreaterThanOrEqual(2);
+  });
+
+  it('skip resumes stalled queue when current is null but upcoming remains', async () => {
+    const { env, logger } = deps();
+    await enqueueTrack('g1', track('a'), env, logger, 100);
+    await enqueueTrack('g1', track('b'), env, logger, 100);
+    await enqueueTrack('g1', track('c'), env, logger, 100);
+    await enqueueTrack('g1', track('d'), env, logger, 100);
+    await enqueueTrack('g1', track('e'), env, logger, 100);
+    await enqueueTrack('g1', track('f'), env, logger, 100);
+
+    // Fail every start: skip-ahead budget 3 drops b,c,d then stops with e remaining after
+    // attempting e with budget 0 — wait: after d (budget 1→0) next is e with budget 0.
+    playImpl = async () => {
+      throw new UserFacingError('Could not start audio stream — the URL may be invalid or unreachable.');
+    };
+    playing.delete('g1');
+    await handlePlayerIdle('g1');
+    expect(getQueueSnapshot('g1').current).toBeNull();
+    // Attempted b,c,d,e (4 tries: initial + 3 skips); f left unattempted.
+    expect(getQueueSnapshot('g1').upcoming.map((t) => t.title)).toEqual(['f']);
+
+    playImpl = async (guildId, t) => {
+      playing.add(guildId);
+      void t;
+      return { mode: 'copy' };
+    };
+    playing.add('g1');
+
+    const result = await skipTrack('g1');
+    expect(result.skipped).toBeNull();
+    expect(result.next?.title).toBe('f');
+    expect(getQueueSnapshot('g1').upcoming).toHaveLength(0);
+  });
+
+  it('concurrent first plays claim one starter and queue the other', async () => {
+    const { env, logger } = deps();
+    let releaseA!: () => void;
+    const gateA = new Promise<void>((resolve) => {
+      releaseA = resolve;
+    });
+    let startedCount = 0;
+    playImpl = async (guildId, t) => {
+      startedCount += 1;
+      playing.add(guildId);
+      void t;
+      await gateA;
+      return { mode: 'copy' };
+    };
+
+    const firstPromise = enqueueTrack('g1', track('a'), env, logger, 100);
+    await vi.waitFor(() => {
+      expect(getQueueSnapshot('g1').current?.title).toBe('a');
+    });
+    const secondPromise = enqueueTrack('g1', track('b'), env, logger, 100);
+    releaseA();
+    const [first, second] = await Promise.all([firstPromise, secondPromise]);
+    expect(first.started).toBe(true);
+    expect(second.started).toBe(false);
+    expect(second.position).toBe(1);
+    expect(startedCount).toBe(1);
+    expect(getQueueSnapshot('g1').upcoming.map((t) => t.title)).toEqual(['b']);
+  });
+
+  it('previousTrack restores history and pushes current onto upcoming', async () => {
+    const { env, logger } = deps();
+    await enqueueTrack('g1', track('a'), env, logger, 100);
+    await enqueueTrack('g1', track('b'), env, logger, 100);
+    await skipTrack('g1');
+    expect(getQueueSnapshot('g1').current?.title).toBe('b');
+    expect(getQueueSnapshot('g1').historyLength).toBe(1);
+
+    const prev = await previousTrack('g1');
+    expect(prev.current.title).toBe('a');
+    const snap = getQueueSnapshot('g1');
+    expect(snap.current?.title).toBe('a');
+    expect(snap.upcoming.map((t) => t.title)).toEqual(['b']);
+    expect(snap.historyLength).toBe(0);
+
+    await expect(previousTrack('g1')).rejects.toBeInstanceOf(UserFacingError);
   });
 });
