@@ -427,4 +427,54 @@ describe('music queue', () => {
 
     await expect(previousTrack('g1')).rejects.toBeInstanceOf(UserFacingError);
   });
+
+  it('skip does not leave a stale ignoreNextIdle that swallows the next real idle', async () => {
+    const { env, logger } = deps();
+    await enqueueTrack('g1', track('a'), env, logger, 100);
+    await enqueueTrack('g1', track('b'), env, logger, 100);
+    await enqueueTrack('g1', track('c'), env, logger, 100);
+
+    const skipped = await skipTrack('g1');
+    expect(skipped.next?.title).toBe('b');
+
+    // Simulate natural track end of b — must advance to c (not be suppressed).
+    playing.delete('g1');
+    await handlePlayerIdle('g1');
+    expect(getQueueSnapshot('g1').current?.title).toBe('c');
+    expect(getQueueSnapshot('g1').upcoming).toHaveLength(0);
+  });
+
+  it('stopQueue then enqueue starts cleanly without a swallowed idle', async () => {
+    const { env, logger } = deps();
+    await enqueueTrack('g1', track('a'), env, logger, 100);
+    await enqueueTrack('g1', track('b'), env, logger, 100);
+    await stopQueue('g1');
+    expect(getQueueSnapshot('g1').current).toBeNull();
+
+    await enqueueTrack('g1', track('c'), env, logger, 100);
+    await enqueueTrack('g1', track('d'), env, logger, 100);
+    playing.delete('g1');
+    await handlePlayerIdle('g1');
+    expect(getQueueSnapshot('g1').current?.title).toBe('d');
+  });
+
+  it('previousTrack restores history when start fails with a non-capacity error', async () => {
+    const { env, logger } = deps();
+    await enqueueTrack('g1', track('a'), env, logger, 100);
+    await enqueueTrack('g1', track('b'), env, logger, 100);
+    await skipTrack('g1');
+    expect(getQueueSnapshot('g1').current?.title).toBe('b');
+    expect(getQueueSnapshot('g1').historyLength).toBe(1);
+
+    playImpl = async () => {
+      throw new UserFacingError('Could not start audio stream — the URL may be invalid or unreachable.');
+    };
+
+    await expect(previousTrack('g1')).rejects.toBeInstanceOf(UserFacingError);
+
+    const snap = getQueueSnapshot('g1');
+    expect(snap.historyLength).toBe(1);
+    expect(snap.current?.title).toBe('b');
+    expect(snap.upcoming.map((t) => t.title)).toEqual([]);
+  });
 });

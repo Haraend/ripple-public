@@ -72,7 +72,7 @@ interface GuildPlayerState {
   upcoming: QueuedTrack[];
   history: QueuedTrack[];
   loop: LoopMode;
-  /** Suppress the next Idle (intentional stop / remount). */
+  /** Suppress the next Idle from remount teardown only (skip/stop use session-level ignore). */
   ignoreNextIdle: boolean;
   readonly lane: Mutex;
   env: Env | null;
@@ -264,6 +264,8 @@ async function startCurrentUnlocked(
       seekMs,
       durationMs: playable.durationMs,
     });
+    // Ensure a lingering remount suppress cannot swallow the real track-end Idle.
+    state.ignoreNextIdle = false;
     notifyPanel(guildId, panelEvent);
     return result;
   } catch (error) {
@@ -593,7 +595,6 @@ export async function skipTrack(
     }
 
     state.current = null;
-    state.ignoreNextIdle = true;
     cancelCapacityRetry(state);
     stopPlayback(guildId);
     await processQueueUnlocked(guildId, state, SKIP_AHEAD_BUDGET, panelEvent);
@@ -624,14 +625,25 @@ export async function previousTrack(
       throw new UserFacingError('No previous track.');
     }
 
-    if (state.current !== null) {
-      state.upcoming.unshift(state.current);
+    const interrupted = state.current;
+    if (interrupted !== null) {
+      state.upcoming.unshift(interrupted);
     }
 
-    state.ignoreNextIdle = true;
     cancelCapacityRetry(state);
     stopPlayback(guildId);
-    await startCurrentUnlocked(guildId, state, prev, 0, panelEvent);
+    try {
+      await startCurrentUnlocked(guildId, state, prev, 0, panelEvent);
+    } catch (error) {
+      if (!(error instanceof CapacityError)) {
+        state.history.push(prev);
+        if (interrupted !== null && state.upcoming[0] === interrupted) {
+          state.upcoming.shift();
+          state.current = interrupted;
+        }
+      }
+      throw error;
+    }
     return {
       current: prev,
       upcomingCount: state.upcoming.length,
@@ -642,7 +654,6 @@ export async function previousTrack(
 export async function stopQueue(guildId: string): Promise<void> {
   await runInLane(guildId, async () => {
     const state = getOrCreate(guildId);
-    state.ignoreNextIdle = true;
     cancelCapacityRetry(state);
     state.current = null;
     state.upcoming = [];

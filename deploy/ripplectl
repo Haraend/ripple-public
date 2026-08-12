@@ -1,0 +1,12 @@
+#!/bin/bash
+# Root-owned helper so github-runner can manage only ripple.service via sudoers.
+set -euo pipefail
+case "${1:-}" in
+  start|stop|restart|status|is-active|is-failed)
+    exec /usr/bin/systemctl "$1" ripple.service
+    ;;
+  *)
+    echo "usage: ripplectl start|stop|restart|status|is-active|is-failed" >&2
+    exit 2
+    ;;
+esac

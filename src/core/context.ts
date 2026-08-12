@@ -181,6 +181,7 @@ export function createInteractionContext(
           content: body.content,
           components: body.components as never,
           embeds: body.embeds as never,
+          allowedMentions: { parse: [] },
           ...(ephemeral ? { flags: MessageFlags.Ephemeral as const } : {}),
         });
       } else {
@@ -188,6 +189,7 @@ export function createInteractionContext(
           content: body.content,
           components: body.components as never,
           embeds: body.embeds as never,
+          allowedMentions: { parse: [] },
           ...(ephemeral ? { flags: MessageFlags.Ephemeral as const } : {}),
         });
       }
@@ -200,6 +202,7 @@ export function createInteractionContext(
           content: body.content,
           components: body.components as never,
           embeds: body.embeds as never,
+          allowedMentions: { parse: [] },
           ...(ephemeral ? { flags: MessageFlags.Ephemeral as const } : {}),
         });
         return;
@@ -208,6 +211,7 @@ export function createInteractionContext(
         content: body.content,
         components: body.components as never,
         embeds: body.embeds as never,
+        allowedMentions: { parse: [] },
       });
     },
   };

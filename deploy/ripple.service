@@ -1,0 +1,25 @@
+[Unit]
+Description=Ripple Discord bot
+Documentation=https://github.com/Haraend/ripple-public
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=github-runner
+Group=github-runner
+WorkingDirectory=/home/github-runner/apps/ripple
+# Optional until the first Prod deploy materializes .env from GitHub Environment secrets.
+EnvironmentFile=-/home/github-runner/apps/ripple/.env
+# Replace ExecStart node path on the Pi if `command -v node` is not /usr/bin/node
+# (e.g. NodeSource / nvm). Prefer an absolute binary path.
+ExecStart=/usr/bin/node dist/index.js
+Restart=on-failure
+RestartSec=5
+# Soften runaway memory on Pi 3 (1 GB); adjust if needed.
+MemoryMax=512M
+# No new privileges beyond what the unit needs.
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

@@ -17,7 +17,8 @@ local gitignored `TODO.md` on the maintainer machine. This file is the public st
 | 1 | Framework, SQLite settings, `/ping` `/help` `/config` `/owner`, voice smoke (`/join` `/leave` `/play` direct URL), SSRF URL guard, busy-channel voice policy |
 | 2 | Full music: yt-dlp, GuildPlayer queue, loop, now-playing buttons (re-anchor on track change), music-channel config, autoleave, volume/seek hybrid pipeline |
 | 3 | Apex Legends RP tracker with delta-only SQLite writes and channel announcements |
-| 4 | systemd unit, Pi provisioning, on-device validation |
+| 4 | systemd unit, Pi provisioning, on-device validation — see [docs/pi-deploy.md](docs/pi-deploy.md) |
+
 
 ## Requirements
 
@@ -72,6 +73,18 @@ and toggled via `/config`.
 | `pnpm build` | tsup → `dist/index.js` |
 | `pnpm doctor` | Node / ffmpeg / yt-dlp / aes-256-gcm checks |
 | `pnpm deploy-commands` | Register slash commands |
+
+## Production (Pi)
+
+Self-hosted runner + systemd deploy is documented in **[docs/pi-deploy.md](docs/pi-deploy.md)**.
+
+Cut a release by tagging `main` manually; that triggers Deploy Prod (hosted verify, then Pi deploy):
+
+```bash
+git checkout main && git pull
+git tag -a v0.2.0 -m "Release v0.2.0"
+git push origin v0.2.0
+```
 
 ## License
 

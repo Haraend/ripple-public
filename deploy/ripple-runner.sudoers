@@ -1,0 +1,2 @@
+# Allow github-runner to manage only ripple.service via ripplectl.
+github-runner ALL=(root) NOPASSWD: /usr/local/sbin/ripplectl
