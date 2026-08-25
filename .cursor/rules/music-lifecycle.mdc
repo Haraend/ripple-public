@@ -1,0 +1,24 @@
+---
+description: Music module lifecycle invariants (GuildPlayer, panel, capacity)
+globs:
+  - src/modules/music/**
+  - tests/queue.test.ts
+  - tests/now-playing-panel.test.ts
+alwaysApply: false
+---
+
+# Music lifecycle invariants
+
+- One **GuildPlayer** per guild (`player.ts`) owns queue state and an **exclusive lane** for enqueue / idle / skip / stop / previous / volume / seek.
+- Never call `playDirectUrl` or mutate `current` outside that lane.
+- Volume/seek restarts must identity-guard the expected track so skip/idle cannot be clobbered.
+- **CapacityError**: wait/retry (backoff). Never skip-ahead drop queued tracks because the host stream cap is hit.
+- Unplayable start failures may skip-ahead with a small budget; capacity must not.
+- Re-resolve stream URLs at play time via `sourceKey` / track cache (`ensureFreshStreamUrl`). Treat `url` as ephemeral.
+- Exactly **one** now-playing control message per guild. Delete the old message before rebind. Prefer `/config music-channel`; else sticky first `/play` channel.
+- Re-anchor (delete + resend at channel bottom) when a **new track starts** via idle auto-advance or slash/prefix skip/previous, **unless** the panel message is already the channel’s last message (then edit in place). **Edit in place** for button skip/prev/pause/resume/loop and same-track volume/seek. Never poll the panel on a timer.
+- After a voice remount that keeps the queue, resume the current track at the captured position (edit panel, do not re-anchor).
+- Reject outdated panel buttons by session token **and** live message id.
+- `sessionToken` rotates only on full voice teardown (leave / autoleave / hard disconnect), not remount.
+- Kill every FFmpeg / yt-dlp child on skip, stop, leave, destroy, and process shutdown.
+- Queue is in-memory only — not persisted across process restart (Pi budget).

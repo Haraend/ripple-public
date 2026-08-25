@@ -6,10 +6,17 @@ export interface SpawnResult {
   readonly stderr: string;
 }
 
+export interface SpawnCapturedOptions {
+  readonly timeoutMs?: number;
+  readonly env?: NodeJS.ProcessEnv;
+  /** Called immediately after spawn so callers can track/kill the child. */
+  readonly onSpawn?: (child: ChildProcess) => void;
+}
+
 export function spawnCaptured(
   command: string,
   args: readonly string[],
-  options: { timeoutMs?: number; env?: NodeJS.ProcessEnv } = {},
+  options: SpawnCapturedOptions = {},
 ): Promise<SpawnResult> {
   const timeoutMs = options.timeoutMs ?? 30_000;
 
@@ -19,6 +26,8 @@ export function spawnCaptured(
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+
+    options.onSpawn?.(child);
 
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];

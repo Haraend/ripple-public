@@ -7,3 +7,11 @@ export class UserFacingError extends Error {
     this.ephemeral = options.ephemeral ?? true;
   }
 }
+
+/** Host concurrent-stream cap hit — queue must wait/retry, never skip-ahead. */
+export class CapacityError extends UserFacingError {
+  constructor(message: string, options: { cause?: unknown } = {}) {
+    super(message, { ephemeral: true, cause: options.cause });
+    this.name = 'CapacityError';
+  }
+}

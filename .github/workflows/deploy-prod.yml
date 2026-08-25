@@ -1,0 +1,239 @@
+name: Deploy Prod
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to deploy (e.g. v0.1.0)
+        required: true
+        type: string
+      deploy_commands:
+        description: Also run pnpm deploy-commands after migrate
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      tag: ${{ steps.ref.outputs.tag }}
+    steps:
+      - name: Resolve deploy ref
+        id: ref
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            ref="${{ inputs.tag }}"
+          else
+            ref="${GITHUB_REF_NAME}"
+          fi
+          if [[ ! "${ref}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Ref must look like v1.2.3, got: ${ref}" >&2
+            exit 1
+          fi
+          echo "tag=${ref}" >> "${GITHUB_OUTPUT}"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.ref.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Tag must be on main
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor HEAD origin/main \
+            || { echo "Tag is not on main; refusing deploy" >&2; exit 1; }
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.14.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+      - name: Secret scan (staged-tree heuristic)
+        run: |
+          set -euo pipefail
+          if git grep -nE '(DISCORD_TOKEN|APEX_API_KEY|SPOTIFY_CLIENT_SECRET)\s*=\s*[^[:space:]]+' -- ':!.env.example' ':!AGENTS.md' ':!README.md' ':!.cursor/**' ':!TODO.md' ':!docs/**' 2>/dev/null; then
+            echo "Possible hardcoded secret assignment found" >&2
+            exit 1
+          fi
+          if git ls-files | grep -E '(\.env$|\.db$|TODO\.md)' ; then
+            echo "Sensitive path is tracked by git" >&2
+            exit 1
+          fi
+          echo "Secret scan passed"
+
+  deploy:
+    needs: verify
+    runs-on: self-hosted
+    timeout-minutes: 30
+    environment: Prod
+    env:
+      APP_DIR: ${{ vars.APP_DIR }}
+      MIN_FREE_KB: '2000000'
+
+    steps:
+      - name: Resolve APP_DIR default
+        run: |
+          set -euo pipefail
+          if [[ -z "${APP_DIR}" ]]; then
+            echo "APP_DIR=/home/github-runner/apps/ripple" >> "${GITHUB_ENV}"
+          fi
+
+      - name: Disk budget preflight
+        run: |
+          set -euo pipefail
+          avail="$(df -Pk / | awk 'NR==2 {print $4}')"
+          echo "Free KB on /: ${avail} (min ${MIN_FREE_KB})"
+          if [[ "${avail}" -lt "${MIN_FREE_KB}" ]]; then
+            echo "Less than ~2 GB free; refusing deploy" >&2
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.verify.outputs.tag }}
+          fetch-depth: 1
+
+      - name: Ensure app directory
+        run: |
+          set -euo pipefail
+          mkdir -p "${APP_DIR}/data"
+          test -d "${APP_DIR}/data"
+
+      - name: Sync release into APP_DIR
+        run: |
+          set -euo pipefail
+          rsync -a --delete \
+            --exclude '.git/' \
+            --exclude 'data/' \
+            --exclude '.env' \
+            --exclude 'node_modules/' \
+            --exclude 'dist/' \
+            --exclude '.cursor/' \
+            --exclude 'TODO.md' \
+            ./ "${APP_DIR}/"
+
+      - name: Materialize .env from Prod secrets
+        env:
+          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+          DISCORD_CLIENT_ID: ${{ secrets.DISCORD_CLIENT_ID }}
+          OWNER_IDS: ${{ secrets.OWNER_IDS }}
+          APEX_API_KEY: ${{ secrets.APEX_API_KEY }}
+          SPOTIFY_CLIENT_ID: ${{ secrets.SPOTIFY_CLIENT_ID }}
+          SPOTIFY_CLIENT_SECRET: ${{ secrets.SPOTIFY_CLIENT_SECRET }}
+          LOG_LEVEL: ${{ vars.LOG_LEVEL }}
+          DATABASE_PATH: ./data/ripple.db
+          FFMPEG_PATH: ${{ vars.FFMPEG_PATH }}
+          YTDLP_PATH: ${{ vars.YTDLP_PATH }}
+          YTDLP_COOKIES_PATH: ${{ vars.YTDLP_COOKIES_PATH }}
+        run: |
+          set -euo pipefail
+          : "${DISCORD_TOKEN:?DISCORD_TOKEN secret is required}"
+          : "${DISCORD_CLIENT_ID:?DISCORD_CLIENT_ID secret is required}"
+          tmp="$(mktemp)"
+          umask 077
+          {
+            echo "DISCORD_TOKEN=${DISCORD_TOKEN}"
+            echo "DISCORD_CLIENT_ID=${DISCORD_CLIENT_ID}"
+            echo "OWNER_IDS=${OWNER_IDS:-}"
+            echo "NODE_ENV=production"
+            echo "LOG_LEVEL=${LOG_LEVEL:-info}"
+            echo "DATABASE_PATH=${DATABASE_PATH}"
+            echo "FFMPEG_PATH=${FFMPEG_PATH:-ffmpeg}"
+            echo "YTDLP_PATH=${YTDLP_PATH:-yt-dlp}"
+            if [[ -n "${YTDLP_COOKIES_PATH:-}" ]]; then
+              echo "YTDLP_COOKIES_PATH=${YTDLP_COOKIES_PATH}"
+            fi
+            if [[ -n "${APEX_API_KEY:-}" ]]; then
+              echo "APEX_API_KEY=${APEX_API_KEY}"
+            fi
+            if [[ -n "${SPOTIFY_CLIENT_ID:-}" ]]; then
+              echo "SPOTIFY_CLIENT_ID=${SPOTIFY_CLIENT_ID}"
+            fi
+            if [[ -n "${SPOTIFY_CLIENT_SECRET:-}" ]]; then
+              echo "SPOTIFY_CLIENT_SECRET=${SPOTIFY_CLIENT_SECRET}"
+            fi
+          } > "${tmp}"
+          install -m 600 "${tmp}" "${APP_DIR}/.env"
+          rm -f "${tmp}"
+
+      - name: Enable pnpm via corepack
+        working-directory: ${{ env.APP_DIR }}
+        run: |
+          set -euo pipefail
+          corepack enable
+          corepack prepare pnpm@10.14.0 --activate
+
+      - name: Install dependencies
+        working-directory: ${{ env.APP_DIR }}
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        working-directory: ${{ env.APP_DIR }}
+        run: pnpm build
+
+      - name: Migrate database
+        working-directory: ${{ env.APP_DIR }}
+        run: pnpm db:migrate
+
+      - name: Deploy slash commands
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.deploy_commands }}
+        working-directory: ${{ env.APP_DIR }}
+        run: pnpm deploy-commands
+
+      - name: Restart ripple
+        run: |
+          set -euo pipefail
+          sudo -n /usr/local/sbin/ripplectl restart
+          sudo -n /usr/local/sbin/ripplectl is-active
+
+      - name: Cleanup disk
+        if: always()
+        working-directory: ${{ env.APP_DIR }}
+        run: |
+          set -euo pipefail
+          pnpm store prune || true
+          rm -rf "${HOME}/.cache/node/gyp" || true
+          if [[ -d "${GITHUB_WORKSPACE}/node_modules" ]]; then
+            rm -rf "${GITHUB_WORKSPACE}/node_modules"
+          fi
+          if [[ -d "${GITHUB_WORKSPACE}/dist" ]]; then
+            rm -rf "${GITHUB_WORKSPACE}/dist"
+          fi
+          avail="$(df -Pk / | awk 'NR==2 {print $4}')"
+          echo "Free KB on / after cleanup: ${avail}"
+          if [[ "${avail}" -lt "${MIN_FREE_KB}" ]]; then
+            echo "Disk below threshold after cleanup" >&2
+            exit 1
+          fi

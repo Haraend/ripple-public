@@ -1,12 +1,50 @@
 import type { Event } from '../core/types.js';
+import {
+  cancelEmptyChannelAutoleave,
+  cancelIdleQueueAutoleave,
+  scheduleEmptyChannelAutoleave,
+  scheduleIdleQueueAutoleave,
+} from '../modules/music/autoleave.js';
+import { getQueueSnapshot } from '../modules/music/queue.js';
+import { getSession } from '../modules/music/session-manager.js';
+
+function channelHasHumans(channel: {
+  members: { some: (fn: (m: { user: { bot: boolean } }) => boolean) => boolean };
+}): boolean {
+  return channel.members.some((member) => !member.user.bot);
+}
 
 /**
- * Phase 1 stub — Phase 2 wires autoleave / empty-channel timers here.
- * Keeping the event registered so the intent path is exercised early.
+ * Empty-channel + idle-queue autoleave hooks on voice membership changes.
  */
 export const voiceStateUpdateEvent: Event<'voiceStateUpdate'> = {
   name: 'voiceStateUpdate',
-  execute(_client, _oldState, _newState) {
-    // no-op in Phase 1
+  execute(client, oldState, newState) {
+    const guildId = newState.guild.id;
+    const session = getSession(guildId);
+    if (!session) {
+      return;
+    }
+
+    const channel =
+      newState.guild.channels.cache.get(session.channelId) ??
+      oldState.guild.channels.cache.get(session.channelId);
+    if (!channel || !channel.isVoiceBased()) {
+      return;
+    }
+
+    if (channelHasHumans(channel)) {
+      cancelEmptyChannelAutoleave(guildId);
+      cancelIdleQueueAutoleave(guildId);
+      return;
+    }
+
+    const env = client.services.env;
+    scheduleEmptyChannelAutoleave(guildId, env.MUSIC_EMPTY_CHANNEL_TIMEOUT_MS);
+
+    const snap = getQueueSnapshot(guildId);
+    if (snap.current === null && snap.upcoming.length === 0) {
+      scheduleIdleQueueAutoleave(guildId, env.MUSIC_IDLE_TIMEOUT_MS);
+    }
   },
 };

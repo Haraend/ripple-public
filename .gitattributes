@@ -1,0 +1,4 @@
+# Keep shell/sudoers/workflows POSIX LF on Windows checkouts
+deploy/** text eol=lf
+.github/workflows/** text eol=lf
+docs/** text eol=lf

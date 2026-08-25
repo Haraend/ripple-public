@@ -5,19 +5,20 @@ Designed to run on a **Raspberry Pi 3** (arm64, ~1 GB RAM, 32 GB storage).
 
 ## Current phase
 
-**Phase 1 — Core skeleton + voice smoke test** (complete and live-verified on `feat/phase-1-core`; merge to `main`, then Phase 2 music).
+**Phase 2 — Music module** (in progress on `feat/phase-2-music`; yt-dlp, track cache, Spotify, GuildPlayer queue lifecycle, now-playing panel, capacity wait/retry, autoleave, pause/volume/seek).
 
-Later phases (music module, Apex tracker, Pi deployment) live in a local gitignored
-`TODO.md` on the maintainer machine. This file is the public status pointer.
+Later phases (Apex tracker, Pi deployment) and remaining Phase 2 checkboxes live in a
+local gitignored `TODO.md` on the maintainer machine. This file is the public status pointer.
 
 ## Features (roadmap)
 
 | Phase | Scope |
 | --- | --- |
 | 1 | Framework, SQLite settings, `/ping` `/help` `/config` `/owner`, voice smoke (`/join` `/leave` `/play` direct URL), SSRF URL guard, busy-channel voice policy |
-| 2 | Full music: yt-dlp, queue, loop, buttons, autoleave, volume/seek hybrid pipeline |
+| 2 | Full music: yt-dlp, GuildPlayer queue, loop, now-playing buttons (re-anchor on track change), music-channel config, autoleave, volume/seek hybrid pipeline |
 | 3 | Apex Legends RP tracker with delta-only SQLite writes and channel announcements |
-| 4 | systemd unit, Pi provisioning, on-device validation |
+| 4 | systemd unit, Pi provisioning, on-device validation — see [docs/pi-deploy.md](docs/pi-deploy.md) |
+
 
 ## Requirements
 
@@ -72,6 +73,18 @@ and toggled via `/config`.
 | `pnpm build` | tsup → `dist/index.js` |
 | `pnpm doctor` | Node / ffmpeg / yt-dlp / aes-256-gcm checks |
 | `pnpm deploy-commands` | Register slash commands |
+
+## Production (Pi)
+
+Self-hosted runner + systemd deploy is documented in **[docs/pi-deploy.md](docs/pi-deploy.md)**.
+
+Cut a release by tagging `main` manually; that triggers Deploy Prod (hosted verify, then Pi deploy):
+
+```bash
+git checkout main && git pull
+git tag -a v0.2.0 -m "Release v0.2.0"
+git push origin v0.2.0
+```
 
 ## License
 

@@ -4,7 +4,8 @@ Public Discord bot (music + Apex Legends tracker) optimized for Raspberry Pi 3.
 
 ## Current phase
 
-**Phase 1 — Core skeleton + voice smoke test** (complete and live-verified on `feat/phase-1-core`; next is Phase 2 music after merge to `main`).
+**Phase 2 — Music module** (in progress on `feat/phase-2-music`; GuildPlayer lifecycle,
+now-playing panel, capacity wait/retry, stream re-resolve).
 
 Detailed checkbox tasks for Phases 1–4 live in a **gitignored** `TODO.md` on the
 maintainer machine. If you are a fresh clone / cloud agent and do not see
@@ -22,6 +23,14 @@ Do not invent scope beyond the active phase.
 7. SQLite writes only when state actually changes.
 8. Justify any new runtime dependency against the 1 GB / 32 GB Pi budget.
 9. Direct `/play` URLs must pass SSRF checks (no private/loopback/link-local targets).
+
+## Music lifecycle invariants
+
+1. One **GuildPlayer** per guild owns the queue and an exclusive command lane (enqueue, idle, skip, stop, previous, volume, seek).
+2. Exactly one now-playing control message per guild; delete before rebind. Optional `/config music-channel`, else sticky first `/play` channel. Re-anchor to channel bottom on new track start (edit in place otherwise; no progress polling).
+3. Never skip-ahead on host stream capacity — wait/retry. Re-resolve stream URLs at play time.
+4. Queue is not persisted across process restart.
+5. See `.cursor/rules/music-lifecycle.mdc` for the full list.
 
 ## Stack (pinned)
 
@@ -43,7 +52,7 @@ in the test guild. For production multi-guild, unset `DEV_GUILD_ID` and deploy g
 
 Commands, events, and modules implement the interfaces in `src/core/types.ts`.
 Do not redefine them. Music and Apex are optional modules that disable cleanly
-when their env keys are absent. Do not start Phase 2 scope until Phase 1 is merged.
+when their env keys are absent.
 
 ## Verification before marking work done
 

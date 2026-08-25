@@ -9,6 +9,7 @@ import {
 import type { Env } from '../config/env.js';
 import type { RippleDb } from '../db/index.js';
 import type { GuildSettingsRepository } from '../db/repositories/guild-settings.js';
+import type { TrackCacheRepository } from '../db/repositories/track-cache.js';
 import type { Logger } from '../lib/logger.js';
 import type { Command, Module } from './types.js';
 
@@ -17,6 +18,7 @@ export interface RippleServices {
   readonly logger: Logger;
   readonly db: RippleDb;
   readonly guildSettings: GuildSettingsRepository;
+  readonly trackCache: TrackCacheRepository;
   readonly closeDb: () => void;
 }
 

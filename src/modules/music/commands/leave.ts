@@ -13,7 +13,7 @@ export const leaveCommand: Command = {
     if (!ctx.guild) {
       return;
     }
-    const left = leaveChannel(ctx.guild.id);
+    const left = await leaveChannel(ctx.guild.id);
     await ctx.reply(left ? 'Left the voice channel.' : 'I was not in a voice channel.');
   },
 };
